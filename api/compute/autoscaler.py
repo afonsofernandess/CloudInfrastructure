@@ -1,0 +1,91 @@
+"""
+Auto-scaler background thread.
+
+Runs every CHECK_INTERVAL_SEC seconds and applies the SLA policy:
+- If avg CPU > SCALE_UP_CPU_PCT and total VMs < MAX_VMS  → spin up a new VM
+- If avg CPU < SCALE_DOWN_CPU_PCT and total VMs > MIN_VMS → tear down the oldest idle VM
+
+Started and stopped via FastAPI's lifespan in main.py.
+"""
+
+import threading
+import logging
+from datetime import datetime, timezone
+
+from opennebula.vm_manager import create_vm, destroy_vm, list_all_vms
+from api.compute.monitor import get_cluster_metrics
+from api.compute import sla
+
+AUTOSCALE_PREFIX = "autoscale-vm-"
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("autoscaler")
+log.setLevel(logging.INFO)
+
+# Tracks how long each VM (by one_vm_id) has been below the idle threshold
+_idle_since: dict[int, datetime] = {}
+
+
+class AutoScaler:
+    def __init__(self):
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._stop_event = threading.Event()
+        self.enabled = True
+
+    def start(self):
+        log.info("AutoScaler started (interval=%ss)", sla.CHECK_INTERVAL_SEC)
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        log.info("AutoScaler stopped")
+
+    def _loop(self):
+        while not self._stop_event.wait(timeout=sla.CHECK_INTERVAL_SEC):
+            if self.enabled:
+                try:
+                    self._check_and_scale()
+                except Exception as e:
+                    log.error("AutoScaler error: %s", e)
+
+    def _check_and_scale(self):
+        metrics = get_cluster_metrics()
+        active = metrics["active_vms"]
+        total = metrics["total_vms"]
+        avg_cpu = metrics["avg_cpu_pct"]
+
+        log.info("AutoScaler check — active=%d total=%d avg_cpu=%.1f%%", active, total, avg_cpu)
+
+        # Scale UP
+        if avg_cpu > sla.SCALE_UP_CPU_PCT and total < sla.MAX_VMS:
+            name = f"autoscale-vm-{int(datetime.now(timezone.utc).timestamp())}"
+            one_vm_id = create_vm(name, sla.DEFAULT_TEMPLATE_ID)
+            log.info("Scaled UP — created VM '%s' (one_vm_id=%d)", name, one_vm_id)
+            return
+
+        # Scale DOWN — only consider autoscaler-managed VMs (never touch user VMs)
+        if avg_cpu < sla.SCALE_DOWN_CPU_PCT and total > sla.MIN_VMS:
+            now = datetime.now(timezone.utc)
+            all_vms = list_all_vms()
+            # Only VMs created by the autoscaler are eligible for removal
+            autoscale_vms = [
+                vm for vm in all_vms
+                if vm["state"] == "ACTIVE" and vm["name"].startswith(AUTOSCALE_PREFIX)
+            ]
+
+            for vm in autoscale_vms:
+                vid = vm["one_vm_id"]
+                if vm["cpu_usage_pct"] < sla.SCALE_DOWN_CPU_PCT:
+                    if vid not in _idle_since:
+                        _idle_since[vid] = now
+                    elif (now - _idle_since[vid]).seconds >= sla.SCALE_DOWN_WINDOW_SEC:
+                        destroy_vm(vid)
+                        _idle_since.pop(vid, None)
+                        log.info("Scaled DOWN — destroyed autoscale VM one_vm_id=%d (idle >%ds)", vid, sla.SCALE_DOWN_WINDOW_SEC)
+                        return
+                else:
+                    _idle_since.pop(vid, None)
+
+
+# Singleton used by main.py
+autoscaler = AutoScaler()

@@ -12,7 +12,8 @@ Custom cloud infrastructure built on top of **OpenNebula**, re-implementing clou
 4. [Starting the API Server](#4-starting-the-api-server)
 5. [Phase 1 — OpenNebula Connection](#5-phase-1--opennebula-connection)
 6. [Phase 2 — User Management](#6-phase-2--user-management)
-7. [Implemented Services Roadmap](#7-implemented-services-roadmap)
+7. [Phase 3 — Elastic Compute](#7-phase-3--elastic-compute)
+8. [Implemented Services Roadmap](#8-implemented-services-roadmap)
 
 ---
 
@@ -43,18 +44,27 @@ This forwards:
 ```
 CloudInfrastructure/
 ├── api/
-│   ├── main.py                    # FastAPI app entry point
+│   ├── main.py                    # FastAPI app entry point + autoscaler lifespan
 │   ├── database.py                # SQLite setup and DB session dependency
-│   └── auth/
-│       ├── models.py              # User table (SQLAlchemy)
-│       ├── schemas.py             # Request/response shapes (Pydantic)
-│       ├── jwt.py                 # JWT token creation and verification
-│       ├── router.py              # Auth endpoints (register, login, me, update, delete)
-│       └── opennebula_sync.py     # Mirrors user actions to OpenNebula
+│   ├── auth/
+│   │   ├── models.py              # User table (SQLAlchemy)
+│   │   ├── schemas.py             # Request/response shapes (Pydantic)
+│   │   ├── jwt.py                 # JWT token creation and verification
+│   │   ├── router.py              # Auth endpoints (register, login, me, update, delete)
+│   │   └── opennebula_sync.py     # Mirrors user actions to OpenNebula
+│   └── compute/
+│       ├── models.py              # VMInstance table (tracks user → VM ownership)
+│       ├── schemas.py             # VMCreate, VMResponse, ClusterStatus
+│       ├── sla.py                 # SLA constants (min/max VMs, CPU thresholds)
+│       ├── monitor.py             # Collects avg CPU/memory from active VMs
+│       ├── autoscaler.py          # Background thread: scales VMs up/down per SLA
+│       └── router.py              # Compute endpoints (provision, list, detail, destroy, status)
 ├── opennebula/
-│   └── connection.py              # OpenNebula client factory (pyone)
+│   ├── connection.py              # OpenNebula client factory (pyone)
+│   └── vm_manager.py             # Low-level VM operations: create, destroy, get, list
 ├── scripts/
-│   └── test_connection.py         # Phase 1 connection test script
+│   ├── test_connection.py         # Phase 1 connection test script
+│   └── test_autoscaler.py         # Autoscaler test with real OpenNebula VMs
 ├── cloud.db                       # SQLite database (auto-created on first run)
 ├── GUIDELINES.md                  # Implementation plan and phases
 └── README.md                      # This file
@@ -87,7 +97,31 @@ Three functions that mirror user operations to OpenNebula via `pyone`:
 All 5 auth endpoints (see Phase 2 below).
 
 **`api/main.py`**
-Creates all DB tables on startup, mounts the auth router, exposes `GET /` health check.
+Creates all DB tables on startup, mounts both routers, starts the autoscaler background thread on startup and stops it on shutdown via FastAPI's lifespan.
+
+**`opennebula/vm_manager.py`**
+Low-level pyone VM operations: `create_vm`, `destroy_vm`, `get_vm`, `list_all_vms`. Converts raw pyone objects into plain dicts with human-readable state names and metrics.
+
+**`api/compute/models.py`**
+Defines the `vm_instances` table: `id`, `user_id` (FK to users), `one_vm_id` (OpenNebula VM ID), `name`, `template_id`, `created_at`.
+
+**`api/compute/schemas.py`**
+Pydantic shapes: `VMCreate` (name, template_id), `VMResponse` (includes live CPU/memory from OpenNebula), `ClusterStatus` (aggregate metrics + SLA config).
+
+**`api/compute/sla.py`**
+All SLA constants in one place: `MIN_VMS=1`, `MAX_VMS=5`, `SCALE_UP_CPU_PCT=70`, `SCALE_DOWN_CPU_PCT=20`, `SCALE_DOWN_WINDOW_SEC=120`, `CHECK_INTERVAL_SEC=30`.
+
+**`api/compute/monitor.py`**
+Calls `list_all_vms()`, filters to ACTIVE state, and returns aggregate `avg_cpu_pct`, `avg_memory_mb`, `total_vms`, `active_vms`.
+
+**`api/compute/autoscaler.py`**
+Background `threading.Thread` that runs every 30 seconds. If avg CPU > 70% and VM count < 5 → creates a new VM. If avg CPU < 20% and VM count > 1 → destroys the idle VM (only after it has been idle for 2 minutes to avoid flapping). Exposed as a singleton `autoscaler` imported by `main.py`.
+
+**`api/compute/router.py`**
+5 endpoints mounted at `/compute`: provision VM, list VMs, get VM detail, destroy VM, cluster status. Only shows the calling user's own VMs. Auto-cleans DB records for VMs already terminated in OpenNebula (state DONE).
+
+**`scripts/test_autoscaler.py`**
+Real VM autoscaler test — temporarily overrides SLA thresholds in memory, triggers a real scale up (creates a VM in OpenNebula), waits for it to fully boot (LCM_STATE=RUNNING), then forces a scale down (destroys it). Always restores original SLA values at the end via a `finally` block.
 
 ---
 
@@ -238,13 +272,127 @@ curl -s http://localhost:8000/auth/me \
 
 ---
 
-## 7. Implemented Services Roadmap
+## 7. Phase 3 — Elastic Compute
+
+The API server must be running and the SSH tunnel must be active.
+
+### Provision a VM
+
+```bash
+curl -s -X POST http://localhost:8000/compute/vms \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-first-vm"}' | python3 -m json.tool
+```
+
+**Expected response:**
+```json
+{
+    "id": 1,
+    "one_vm_id": 3,
+    "name": "my-first-vm",
+    "template_id": 0,
+    "state": "PENDING",
+    "cpu_usage_pct": 0.0,
+    "memory_mb": 0.0,
+    "created_at": "2026-04-22T14:22:21"
+}
+```
+
+`one_vm_id` is the VM's ID in OpenNebula. State starts as `PENDING` and transitions to `ACTIVE` once the hypervisor boots it.
+
+### List your VMs
+
+```bash
+curl -s http://localhost:8000/compute/vms \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" | python3 -m json.tool
+```
+
+### Get a single VM with live metrics
+
+```bash
+curl -s http://localhost:8000/compute/vms/1 \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" | python3 -m json.tool
+```
+
+Once the VM is running you will see `cpu_usage_pct` and `memory_mb` populated with live values from OpenNebula.
+
+### Destroy a VM
+
+```bash
+curl -s -X DELETE http://localhost:8000/compute/vms/1 \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE"
+```
+
+Returns `204 No Content` on success. The VM is terminated in OpenNebula and removed from the local DB.
+
+### Check cluster status and autoscaler
+
+```bash
+curl -s http://localhost:8000/compute/status \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" | python3 -m json.tool
+```
+
+**Expected response:**
+```json
+{
+    "total_vms": 1,
+    "active_vms": 1,
+    "avg_cpu_pct": 12.5,
+    "autoscaler_enabled": true,
+    "min_vms": 1,
+    "max_vms": 5,
+    "scale_up_threshold_pct": 70.0,
+    "scale_down_threshold_pct": 20.0
+}
+```
+
+### Verify the VM exists in OpenNebula
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, '.')
+from opennebula.connection import get_client
+client = get_client()
+pool = client.vmpool.info(-2, -1, -1, -1)
+for vm in pool.VM:
+    print(f'[{vm.ID}] {vm.NAME}  state={vm.STATE}')
+"
+```
+
+State `3` = ACTIVE (running).
+
+### Watch the autoscaler in the server logs
+
+The autoscaler logs its decisions every 30 seconds in the uvicorn terminal:
+
+```
+INFO:autoscaler:AutoScaler started (interval=30s)
+INFO:autoscaler:AutoScaler check — active=1 total=1 avg_cpu=12.5%
+INFO:autoscaler:Scaled UP — created VM 'autoscale-vm-1745330000' (one_vm_id=4)
+INFO:autoscaler:Scaled DOWN — destroyed VM one_vm_id=4 (idle >120s)
+```
+
+### SLA rules (defined in `api/compute/sla.py`)
+
+| Rule | Value |
+|------|-------|
+| Minimum VMs always running | 1 |
+| Maximum VMs allowed | 5 |
+| Scale up when avg CPU exceeds | 70% |
+| Scale down when avg CPU drops below | 20% |
+| Idle window before scale down | 120 seconds |
+| Autoscaler check interval | 30 seconds |
+
+---
+
+## 8. Implemented Services Roadmap
 
 | Phase | Service | Status |
 |-------|---------|--------|
 | 1 | OpenNebula connection + test script | Done |
 | 2 | User registration, login, JWT auth, account management | Done |
-| 3 | Elastic compute — VM provisioning + auto-scaler | Pending |
+| 3 | Elastic compute — VM provisioning + auto-scaler | Done |
 | 4 | Disk storage — MinIO object storage | Pending |
 | 5 | Container service — Docker on demand | Pending |
 | 6 | Database service — PostgreSQL on demand (DBaaS) | Pending |
