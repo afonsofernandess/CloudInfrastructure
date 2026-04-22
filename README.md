@@ -13,7 +13,8 @@ Custom cloud infrastructure built on top of **OpenNebula**, re-implementing clou
 5. [Phase 1 — OpenNebula Connection](#5-phase-1--opennebula-connection)
 6. [Phase 2 — User Management](#6-phase-2--user-management)
 7. [Phase 3 — Elastic Compute](#7-phase-3--elastic-compute)
-8. [Implemented Services Roadmap](#8-implemented-services-roadmap)
+8. [Phase 4 — Disk Storage](#8-phase-4--disk-storage)
+9. [Implemented Services Roadmap](#9-implemented-services-roadmap)
 
 ---
 
@@ -62,7 +63,14 @@ CloudInfrastructure/
 ├── opennebula/
 │   ├── connection.py              # OpenNebula client factory (pyone)
 │   └── vm_manager.py             # Low-level VM operations: create, destroy, get, list
+├── api/
+│   └── storage/
+│       ├── minio_client.py        # MinIO wrapper — bucket management, upload, download, list, delete
+│       ├── schemas.py             # FileInfo, UploadResponse shapes
+│       └── router.py              # Storage endpoints (upload, list, download, delete)
+├── minio_data/                    # MinIO data directory (auto-created on first run)
 ├── scripts/
+│   ├── start_minio.sh             # Starts the MinIO object storage server
 │   ├── test_connection.py         # Phase 1 connection test script
 │   └── test_autoscaler.py         # Autoscaler test with real OpenNebula VMs
 ├── cloud.db                       # SQLite database (auto-created on first run)
@@ -123,15 +131,35 @@ Background `threading.Thread` that runs every 30 seconds. If avg CPU > 70% and V
 **`scripts/test_autoscaler.py`**
 Real VM autoscaler test — temporarily overrides SLA thresholds in memory, triggers a real scale up (creates a VM in OpenNebula), waits for it to fully boot (LCM_STATE=RUNNING), then forces a scale down (destroys it). Always restores original SLA values at the end via a `finally` block.
 
+**`scripts/start_minio.sh`**
+Downloads and starts the MinIO object storage server. Exposes the API on port `9002` and the web console on port `9003`. Data is persisted in `./minio_data/`. Must be running before starting the API server.
+
+**`api/storage/minio_client.py`**
+MinIO Python client wrapper. Each user gets a dedicated bucket named `user-{username}`, created automatically on first upload. Exports: `upload_file`, `list_files`, `download_file`, `delete_file`, `ensure_bucket`.
+
+**`api/storage/schemas.py`**
+Pydantic shapes: `FileInfo` (filename, size_bytes, last_modified) and `UploadResponse` (filename, bucket, size_bytes, message).
+
+**`api/storage/router.py`**
+4 endpoints mounted at `/storage`: upload file (multipart form), list files, download file, delete file. All endpoints are per-user isolated — users can only see and access their own bucket.
+
 ---
 
 ## 3. Installation
 
+**Python dependencies:**
+
 ```bash
-pip install pyone fastapi uvicorn "python-jose[cryptography]" "passlib[bcrypt]" sqlalchemy "pydantic[email]" "bcrypt==4.0.1"
+pip install pyone fastapi uvicorn "python-jose[cryptography]" "passlib[bcrypt]" sqlalchemy "pydantic[email]" "bcrypt==4.0.1" minio python-multipart
 ```
 
 > Note: `bcrypt` must be pinned to `4.0.1` — newer versions are incompatible with `passlib`.
+
+**MinIO server binary (Phase 4):**
+
+```bash
+curl -s https://dl.min.io/server/minio/release/linux-amd64/minio -o ~/minio && chmod +x ~/minio
+```
 
 ---
 
@@ -386,15 +414,128 @@ INFO:autoscaler:Scaled DOWN — destroyed VM one_vm_id=4 (idle >120s)
 
 ---
 
-## 8. Implemented Services Roadmap
+## 8. Phase 4 — Disk Storage
+
+MinIO must be running and the API server must be running.
+
+### Start MinIO (required before the API)
+
+Open a dedicated terminal and run:
+
+```bash
+bash scripts/start_minio.sh
+```
+
+Expected output:
+```
+Starting MinIO...
+  API  → http://localhost:9002
+  UI   → http://localhost:9003
+  Data → ./minio_data
+```
+
+Keep this terminal open — MinIO must stay running.
+
+### Verify MinIO is up
+
+```bash
+curl -s http://localhost:9002/minio/health/live && echo "MinIO is up"
+```
+
+You can also open the **web console** at http://localhost:9003 and log in with `minioadmin` / `minioadmin123` to browse buckets and files visually.
+
+### Upload a file
+
+```bash
+curl -s -X POST http://localhost:8000/storage/upload \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -F "file=@/path/to/your/file.txt" | python3 -m json.tool
+```
+
+**Expected response:**
+```json
+{
+    "filename": "file.txt",
+    "bucket": "user-afonso",
+    "size_bytes": 35,
+    "message": "File uploaded successfully"
+}
+```
+
+`bucket` shows which MinIO bucket the file was stored in — one bucket per user, created automatically on first upload.
+
+### List your files
+
+```bash
+curl -s http://localhost:8000/storage/files \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" | python3 -m json.tool
+```
+
+**Expected response:**
+```json
+[
+    {
+        "filename": "file.txt",
+        "size_bytes": 35,
+        "last_modified": "2026-04-22T17:14:23.296000Z"
+    }
+]
+```
+
+### Download a file
+
+```bash
+curl -s http://localhost:8000/storage/download/file.txt \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  --output downloaded_file.txt
+```
+
+The file is returned as a binary download with `Content-Disposition: attachment`.
+
+### Delete a file
+
+```bash
+curl -s -X DELETE http://localhost:8000/storage/files/file.txt \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" -w "HTTP %{http_code}"
+# Expected: HTTP 204
+```
+
+### Verify per-user bucket isolation
+
+Each user has a completely separate bucket. Log in as a different user and list their files — they will never see each other's uploads:
+
+```bash
+# Bucket names follow the pattern: user-{username}
+# afonso   → bucket: user-afonso
+# testuser → bucket: user-testuser
+```
+
+You can confirm this in the MinIO console at http://localhost:9003 — each user has their own bucket listed separately.
+
+### Verify from MinIO directly (Python)
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, '.')
+from api.storage.minio_client import get_client
+client = get_client()
+for bucket in client.list_buckets():
+    print(f'Bucket: {bucket.name}  created={bucket.creation_date}')
+"
+```
+
+---
+
+## 9. Implemented Services Roadmap
 
 | Phase | Service | Status |
 |-------|---------|--------|
 | 1 | OpenNebula connection + test script | Done |
 | 2 | User registration, login, JWT auth, account management | Done |
 | 3 | Elastic compute — VM provisioning + auto-scaler | Done |
-| 4 | Disk storage — MinIO object storage | Pending |
+| 4 | Disk storage — MinIO object storage | Done |
 | 5 | Container service — Docker on demand | Pending |
 | 6 | Database service — PostgreSQL on demand (DBaaS) | Pending |
 | 7 | SLA + energy saving (scale-to-zero) | Pending |
 | 8 | Tests + evaluation metrics + report | Pending |
+
