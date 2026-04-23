@@ -14,7 +14,8 @@ Custom cloud infrastructure built on top of **OpenNebula**, re-implementing clou
 6. [Phase 2 — User Management](#6-phase-2--user-management)
 7. [Phase 3 — Elastic Compute](#7-phase-3--elastic-compute)
 8. [Phase 4 — Disk Storage](#8-phase-4--disk-storage)
-9. [Implemented Services Roadmap](#9-implemented-services-roadmap)
+9. [Phase 5 — Container Service](#9-phase-5--container-service)
+10. [Implemented Services Roadmap](#10-implemented-services-roadmap)
 
 ---
 
@@ -53,26 +54,29 @@ CloudInfrastructure/
 │   │   ├── jwt.py                 # JWT token creation and verification
 │   │   ├── router.py              # Auth endpoints (register, login, me, update, delete)
 │   │   └── opennebula_sync.py     # Mirrors user actions to OpenNebula
-│   └── compute/
-│       ├── models.py              # VMInstance table (tracks user → VM ownership)
-│       ├── schemas.py             # VMCreate, VMResponse, ClusterStatus
-│       ├── sla.py                 # SLA constants (min/max VMs, CPU thresholds)
-│       ├── monitor.py             # Collects avg CPU/memory from active VMs
-│       ├── autoscaler.py          # Background thread: scales VMs up/down per SLA
-│       └── router.py              # Compute endpoints (provision, list, detail, destroy, status)
+│   ├── compute/
+│   │   ├── models.py              # VMInstance table (tracks user → VM ownership)
+│   │   ├── schemas.py             # VMCreate, VMResponse, ClusterStatus
+│   │   ├── sla.py                 # SLA constants (min/max VMs, CPU thresholds)
+│   │   ├── monitor.py             # Collects avg CPU/memory from active VMs
+│   │   ├── autoscaler.py          # Background thread: scales VMs up/down per SLA
+│   │   └── router.py              # Compute endpoints (provision, list, detail, destroy, status)
+│   ├── storage/
+│   │   ├── minio_client.py        # MinIO wrapper — bucket management, upload, download, list, delete
+│   │   ├── schemas.py             # FileInfo, UploadResponse shapes
+│   │   └── router.py              # Storage endpoints (upload, list, download, delete)
+│   └── containers/
+│       ├── docker_client.py       # Docker SDK wrapper — launch, list, get, start, stop, remove
+│       ├── schemas.py             # ContainerCreate, ContainerResponse shapes
+│       └── router.py              # Container endpoints (launch, list, detail, start, stop, remove)
 ├── opennebula/
 │   ├── connection.py              # OpenNebula client factory (pyone)
 │   └── vm_manager.py             # Low-level VM operations: create, destroy, get, list
-├── api/
-│   └── storage/
-│       ├── minio_client.py        # MinIO wrapper — bucket management, upload, download, list, delete
-│       ├── schemas.py             # FileInfo, UploadResponse shapes
-│       └── router.py              # Storage endpoints (upload, list, download, delete)
-├── minio_data/                    # MinIO data directory (auto-created on first run)
 ├── scripts/
 │   ├── start_minio.sh             # Starts the MinIO object storage server
 │   ├── test_connection.py         # Phase 1 connection test script
 │   └── test_autoscaler.py         # Autoscaler test with real OpenNebula VMs
+├── minio_data/                    # MinIO data directory (auto-created, git-ignored)
 ├── cloud.db                       # SQLite database (auto-created on first run)
 ├── GUIDELINES.md                  # Implementation plan and phases
 └── README.md                      # This file
@@ -143,6 +147,15 @@ Pydantic shapes: `FileInfo` (filename, size_bytes, last_modified) and `UploadRes
 **`api/storage/router.py`**
 4 endpoints mounted at `/storage`: upload file (multipart form), list files, download file, delete file. All endpoints are per-user isolated — users can only see and access their own bucket.
 
+**`api/containers/docker_client.py`**
+Docker SDK wrapper. Every container launched gets a Docker label `cloud_user=<username>` applied automatically. All list/start/stop/remove operations filter by this label so users can never access each other's containers. Container names are prefixed with the username (`afonso-webserver`) to avoid naming conflicts. Uses `create()` + `start()` separately so that if start fails (e.g. image error), the stuck container is automatically removed before raising the error.
+
+**`api/containers/schemas.py`**
+Pydantic shapes: `ContainerCreate` (image, name, optional env dict, optional list of container ports to expose) and `ContainerResponse` (container_id, name, image, status, ports, created).
+
+**`api/containers/router.py`**
+6 endpoints mounted at `/containers`: launch container, list containers, get container detail, start container, stop container, remove container.
+
 ---
 
 ## 3. Installation
@@ -150,7 +163,7 @@ Pydantic shapes: `FileInfo` (filename, size_bytes, last_modified) and `UploadRes
 **Python dependencies:**
 
 ```bash
-pip install pyone fastapi uvicorn "python-jose[cryptography]" "passlib[bcrypt]" sqlalchemy "pydantic[email]" "bcrypt==4.0.1" minio python-multipart
+pip install pyone fastapi uvicorn "python-jose[cryptography]" "passlib[bcrypt]" sqlalchemy "pydantic[email]" "bcrypt==4.0.1" minio python-multipart docker
 ```
 
 > Note: `bcrypt` must be pinned to `4.0.1` — newer versions are incompatible with `passlib`.
@@ -526,7 +539,136 @@ for bucket in client.list_buckets():
 
 ---
 
-## 9. Implemented Services Roadmap
+## 9. Phase 5 — Container Service
+
+Docker must be installed and running on the machine. The API server must be running.
+
+### Verify Docker is running
+
+```bash
+docker --version
+docker info --format '{{.ServerVersion}}'
+```
+
+Expected: prints the Docker version (e.g. `29.4.0`). If Docker is not running, start it first.
+
+### Launch a container
+
+The `ports` field is a **list of container ports to expose** — Docker automatically assigns a free host port for each. This avoids port conflicts between users entirely.
+
+```bash
+curl -s -X POST http://localhost:8000/containers -H "Authorization: Bearer YOUR_TOKEN_HERE" -H "Content-Type: application/json" -d '{"image":"nginx:alpine","name":"webserver","ports":["80/tcp"]}' | python3 -m json.tool
+```
+
+**Expected response:**
+```json
+{
+    "container_id": "d44c8ae1ffae",
+    "name": "afonso-webserver",
+    "image": "nginx:alpine",
+    "status": "running",
+    "ports": {
+        "80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "32768"}]
+    },
+    "created": "2026-04-23T00:55:56Z"
+}
+```
+
+The container name is automatically prefixed with the username (`afonso-webserver`). The `HostPort` in the response tells you which port Docker assigned — use that to reach the service. Two different users can both expose `80/tcp` with no conflict — Docker picks a different free host port for each.
+
+You can also launch containers with environment variables and multiple ports:
+
+```bash
+curl -s -X POST http://localhost:8000/containers -H "Authorization: Bearer YOUR_TOKEN_HERE" -H "Content-Type: application/json" -d '{"image":"python:3.12-alpine","name":"myapp","env":{"MY_VAR":"hello","DEBUG":"true"},"ports":["8080/tcp"]}' | python3 -m json.tool
+```
+
+### Verify the container is actually running
+
+Use the `HostPort` from the launch response to reach the service directly:
+
+```bash
+curl -s -o /dev/null -w "HTTP %{http_code}" http://localhost:32768
+# Expected: HTTP 200
+```
+
+Or verify from Docker directly:
+
+```bash
+docker ps --filter "label=cloud_user=afonso"
+```
+
+Every container launched through our API has the label `cloud_user=<username>` — this is how user isolation is enforced at the Docker level.
+
+### List your containers
+
+```bash
+curl -s http://localhost:8000/containers \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" | python3 -m json.tool
+```
+
+Shows all containers (running and stopped) belonging to the logged-in user. Other users' containers are never returned.
+
+### Get a single container's details
+
+```bash
+curl -s http://localhost:8000/containers/CONTAINER_ID \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" | python3 -m json.tool
+```
+
+### Stop a running container
+
+```bash
+curl -s -X POST http://localhost:8000/containers/CONTAINER_ID/stop \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" | python3 -m json.tool
+```
+
+**Expected response:** same as detail but `"status": "exited"`. The container is stopped but not deleted — you can still see it in the list and start it again.
+
+### Start a stopped container
+
+```bash
+curl -s -X POST http://localhost:8000/containers/CONTAINER_ID/start \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" | python3 -m json.tool
+```
+
+Docker reassigns a free host port when the container starts again (the port may differ from the original). The response includes the new `HostPort`.
+
+> **Note:** if the port is unavailable (e.g. another container took it), you will get a clear error: `"Port already in use — stop the other container using that port first"`. Since ports are auto-assigned this should be rare.
+
+### Remove a container
+
+```bash
+curl -s -X DELETE http://localhost:8000/containers/CONTAINER_ID \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" -w "HTTP %{http_code}"
+# Expected: HTTP 204
+```
+
+Force-removes the container even if still running. After this it no longer appears in the list.
+
+### Verify per-user isolation
+
+Try to access another user's container — it will be rejected:
+
+```bash
+curl -s -X POST http://localhost:8000/containers/AFONSOS_CONTAINER_ID/stop \
+  -H "Authorization: Bearer TESTUSER_TOKEN" | python3 -m json.tool
+# Expected: {"detail": "Container does not belong to this user"}
+```
+
+### Endpoint summary
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/containers` | Launch a new container |
+| `GET` | `/containers` | List your containers |
+| `GET` | `/containers/{id}` | Get container details |
+| `POST` | `/containers/{id}/start` | Start a stopped container |
+| `POST` | `/containers/{id}/stop` | Stop a running container |
+| `DELETE` | `/containers/{id}` | Remove a container |
+
+---
+
+## 10. Implemented Services Roadmap
 
 | Phase | Service | Status |
 |-------|---------|--------|
@@ -534,7 +676,7 @@ for bucket in client.list_buckets():
 | 2 | User registration, login, JWT auth, account management | Done |
 | 3 | Elastic compute — VM provisioning + auto-scaler | Done |
 | 4 | Disk storage — MinIO object storage | Done |
-| 5 | Container service — Docker on demand | Pending |
+| 5 | Container service — Docker on demand | Done |
 | 6 | Database service — PostgreSQL on demand (DBaaS) | Pending |
 | 7 | SLA + energy saving (scale-to-zero) | Pending |
 | 8 | Tests + evaluation metrics + report | Pending |

@@ -5,6 +5,7 @@ from api.auth.router import router as auth_router
 from api.compute.router import router as compute_router
 from api.compute.autoscaler import autoscaler
 from api.storage.router import router as storage_router
+from api.containers.router import router as containers_router
 
 # Import models so SQLAlchemy registers them before create_all
 import api.auth.models
@@ -26,6 +27,7 @@ app = FastAPI(title="My Cloud API", version="1.0.0", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(compute_router)
 app.include_router(storage_router)
+app.include_router(containers_router)
 
 
 @app.get("/")
