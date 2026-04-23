@@ -6,10 +6,12 @@ from api.compute.router import router as compute_router
 from api.compute.autoscaler import autoscaler
 from api.storage.router import router as storage_router
 from api.containers.router import router as containers_router
+from api.database_service.router import router as databases_router
 
 # Import models so SQLAlchemy registers them before create_all
 import api.auth.models
 import api.compute.models
+import api.database_service.models
 
 
 @asynccontextmanager
@@ -28,6 +30,7 @@ app.include_router(auth_router)
 app.include_router(compute_router)
 app.include_router(storage_router)
 app.include_router(containers_router)
+app.include_router(databases_router)
 
 
 @app.get("/")

@@ -15,7 +15,8 @@ Custom cloud infrastructure built on top of **OpenNebula**, re-implementing clou
 7. [Phase 3 — Elastic Compute](#7-phase-3--elastic-compute)
 8. [Phase 4 — Disk Storage](#8-phase-4--disk-storage)
 9. [Phase 5 — Container Service](#9-phase-5--container-service)
-10. [Implemented Services Roadmap](#10-implemented-services-roadmap)
+10. [Phase 6 — Database Service (DBaaS)](#10-phase-6--database-service-dbaas)
+11. [Implemented Services Roadmap](#11-implemented-services-roadmap)
 
 ---
 
@@ -668,7 +669,116 @@ curl -s -X POST http://localhost:8000/containers/AFONSOS_CONTAINER_ID/stop \
 
 ---
 
-## 10. Implemented Services Roadmap
+## 10. Phase 6 — Database Service (DBaaS)
+
+Docker must be installed and running. The API server must be running.
+
+Each provisioned database is a `postgres:16-alpine` Docker container with:
+- A randomly generated 24-character password
+- An auto-assigned host port (mapped to PostgreSQL's `5432`)
+- A Docker label `cloud_db_user=<username>` for per-user isolation
+
+### Provision a PostgreSQL instance
+
+```bash
+curl -s -X POST http://localhost:8000/databases \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-db"}' | python3 -m json.tool
+```
+
+**Expected response:**
+```json
+{
+    "id": 1,
+    "instance_name": "my-db",
+    "container_id": "a3f1b2c4d5e6",
+    "status": "running",
+    "credentials": {
+        "host": "localhost",
+        "port": 54321,
+        "db_name": "afonso",
+        "db_user": "afonso",
+        "db_password": "Xk9mPqR2vLnYcZ7wJtHsAe3B",
+        "connection_string": "postgresql://afonso:Xk9mPqR2vLnYcZ7wJtHsAe3B@localhost:54321/afonso"
+    },
+    "created_at": "2026-04-23T12:00:00"
+}
+```
+
+You can optionally specify a custom database name:
+
+```bash
+curl -s -X POST http://localhost:8000/databases \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"analytics","db_name":"analytics_db"}' | python3 -m json.tool
+```
+
+### Connect with psql
+
+Use the `connection_string` from the response directly:
+
+```bash
+psql "postgresql://afonso:Xk9mPqR2vLnYcZ7wJtHsAe3B@localhost:54321/afonso"
+```
+
+Or verify from Python:
+
+```bash
+python3 -c "
+import psycopg2
+conn = psycopg2.connect('postgresql://afonso:PASSWORD@localhost:PORT/afonso')
+print('Connected:', conn.server_version)
+conn.close()
+"
+```
+
+### List your database instances
+
+```bash
+curl -s http://localhost:8000/databases \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" | python3 -m json.tool
+```
+
+Returns all instances belonging to the logged-in user with live status from Docker.
+
+### Get a single instance (with credentials)
+
+```bash
+curl -s http://localhost:8000/databases/1 \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" | python3 -m json.tool
+```
+
+### Deprovision (delete) a database instance
+
+```bash
+curl -s -X DELETE http://localhost:8000/databases/1 \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" -w "HTTP %{http_code}"
+# Expected: HTTP 204
+```
+
+Stops and removes the Docker container and deletes the record from the local database. All data stored in that PostgreSQL instance is permanently destroyed.
+
+### Verify isolation
+
+```bash
+# Containers follow the naming pattern: db-{username}-{instance_name}
+docker ps --filter "label=cloud_db_user=afonso"
+```
+
+### Endpoint summary
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/databases` | Provision a new PostgreSQL instance |
+| `GET` | `/databases` | List your database instances |
+| `GET` | `/databases/{id}` | Get instance details + credentials |
+| `DELETE` | `/databases/{id}` | Deprovision and delete instance |
+
+---
+
+## 11. Implemented Services Roadmap
 
 | Phase | Service | Status |
 |-------|---------|--------|
@@ -677,7 +787,7 @@ curl -s -X POST http://localhost:8000/containers/AFONSOS_CONTAINER_ID/stop \
 | 3 | Elastic compute — VM provisioning + auto-scaler | Done |
 | 4 | Disk storage — MinIO object storage | Done |
 | 5 | Container service — Docker on demand | Done |
-| 6 | Database service — PostgreSQL on demand (DBaaS) | Pending |
+| 6 | Database service — PostgreSQL on demand (DBaaS) | Done |
 | 7 | SLA + energy saving (scale-to-zero) | Pending |
 | 8 | Tests + evaluation metrics + report | Pending |
 
