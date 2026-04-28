@@ -1,0 +1,276 @@
+import { useState } from 'react'
+import { Server, Plus, RefreshCw, Trash2, ChevronRight, X } from 'lucide-react'
+import { useVMs, useCreateVM, useDestroyVM } from '../hooks/useVMs'
+import { useClusterStatus } from '../hooks/useClusterStatus'
+import Modal from '../components/shared/Modal'
+import ConfirmDialog from '../components/shared/ConfirmDialog'
+import EmptyState from '../components/shared/EmptyState'
+import SkeletonTable from '../components/shared/SkeletonTable'
+import { vmStateColor, formatDate } from '../utils/formatters'
+import clsx from 'clsx'
+
+function VMDetailDrawer({ vm, onClose }) {
+  if (!vm) return null
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative w-full max-w-sm bg-slate-900 border-l border-slate-700 h-full overflow-y-auto shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+          <h2 className="text-lg font-semibold text-slate-100">{vm.name || `VM #${vm.id}`}</h2>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <Field label="Internal ID" value={vm.id} />
+          <Field label="OpenNebula VM ID" value={vm.one_vm_id} />
+          <Field label="Name" value={vm.name || '—'} />
+          <Field label="Template ID" value={vm.template_id} />
+          <div>
+            <span className="text-xs text-slate-400 uppercase tracking-wider">State</span>
+            <div className="mt-1">
+              <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', vmStateColor(vm.state))}>
+                {vm.state || '—'}
+              </span>
+            </div>
+          </div>
+          <Field label="CPU Usage" value={vm.cpu_usage_pct != null ? `${vm.cpu_usage_pct.toFixed(1)}%` : '—'} />
+          <Field label="Memory (MB)" value={vm.memory_mb ?? '—'} />
+          <Field label="Created" value={formatDate(vm.created_at)} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Field({ label, value }) {
+  return (
+    <div>
+      <span className="text-xs text-slate-400 uppercase tracking-wider block mb-0.5">{label}</span>
+      <span className="text-sm text-slate-100">{value}</span>
+    </div>
+  )
+}
+
+export default function VMs() {
+  const { data: vms, isLoading } = useVMs()
+  const { data: cluster } = useClusterStatus()
+  const createVM = useCreateVM()
+  const destroyVM = useDestroyVM()
+
+  const [showLaunchModal, setShowLaunchModal] = useState(false)
+  const [selectedVM, setSelectedVM] = useState(null)
+  const [confirmDestroyId, setConfirmDestroyId] = useState(null)
+  const [launchForm, setLaunchForm] = useState({ template_id: '', name: '' })
+
+  const handleLaunch = (e) => {
+    e.preventDefault()
+    createVM.mutate(
+      { template_id: parseInt(launchForm.template_id, 10), name: launchForm.name || undefined },
+      {
+        onSuccess: () => {
+          setShowLaunchModal(false)
+          setLaunchForm({ template_id: '', name: '' })
+        },
+      }
+    )
+  }
+
+  const avgCpu = cluster?.avg_cpu_pct ?? 0
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-100">Virtual Machines</h1>
+          <p className="text-sm text-slate-400 mt-1">Manage your compute instances</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-xs text-slate-400 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            Auto-refresh 10s
+          </div>
+          <button
+            onClick={() => setShowLaunchModal(true)}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+          >
+            <Plus className="w-4 h-4" />
+            Launch VM
+          </button>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+        {isLoading ? (
+          <div className="p-4">
+            <SkeletonTable rows={4} cols={7} />
+          </div>
+        ) : !vms?.length ? (
+          <EmptyState
+            icon={Server}
+            title="No virtual machines"
+            description="Launch your first VM to get started"
+            actionLabel="Launch VM"
+            onAction={() => setShowLaunchModal(true)}
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-800 text-slate-400 uppercase text-xs tracking-wider">
+                  <th className="px-4 py-3 text-left">Name</th>
+                  <th className="px-4 py-3 text-left">ONE ID</th>
+                  <th className="px-4 py-3 text-left">State</th>
+                  <th className="px-4 py-3 text-left">CPU %</th>
+                  <th className="px-4 py-3 text-left">Memory (MB)</th>
+                  <th className="px-4 py-3 text-left">Created</th>
+                  <th className="px-4 py-3 text-left">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vms.map((vm) => (
+                  <tr
+                    key={vm.id}
+                    className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors"
+                  >
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => setSelectedVM(vm)}
+                        className="text-slate-100 font-medium hover:text-blue-400 transition-colors flex items-center gap-1"
+                      >
+                        {vm.name || `VM #${vm.id}`}
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 text-slate-400">{vm.one_vm_id ?? '—'}</td>
+                    <td className="px-4 py-3">
+                      <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', vmStateColor(vm.state))}>
+                        {vm.state || '—'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-slate-300">
+                      {vm.cpu_usage_pct != null ? `${vm.cpu_usage_pct.toFixed(1)}%` : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-slate-300">{vm.memory_mb ?? '—'}</td>
+                    <td className="px-4 py-3 text-slate-400">{formatDate(vm.created_at)}</td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => setConfirmDestroyId(vm.id)}
+                        className="p-1.5 rounded text-slate-400 hover:bg-red-500/10 hover:text-red-400 transition-colors"
+                        title="Destroy VM"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* SLA banner */}
+      {cluster && (
+        <div className="bg-slate-900 border border-slate-700 rounded-xl p-5">
+          <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">SLA / Cluster Health</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+                <span>VM Usage</span>
+                <span>{cluster.total_vms} / {cluster.max_vms}</span>
+              </div>
+              <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 rounded-full"
+                  style={{ width: `${Math.min(100, (cluster.total_vms / (cluster.max_vms || 1)) * 100)}%` }}
+                />
+              </div>
+            </div>
+            <div>
+              <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+                <span>Avg CPU</span>
+                <span>{avgCpu.toFixed(1)}%</span>
+              </div>
+              <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className={clsx('h-full rounded-full', avgCpu > 80 ? 'bg-red-500' : avgCpu > 60 ? 'bg-yellow-500' : 'bg-green-500')}
+                  style={{ width: `${avgCpu}%` }}
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-slate-400">Autoscaler:</span>
+              <span className={clsx('font-medium', cluster.autoscaler_enabled ? 'text-green-400' : 'text-red-400')}>
+                {cluster.autoscaler_enabled ? 'Enabled' : 'Disabled'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Launch Modal */}
+      <Modal isOpen={showLaunchModal} onClose={() => { setShowLaunchModal(false); setLaunchForm({ template_id: '', name: '' }) }} title="Launch Virtual Machine">
+        <form onSubmit={handleLaunch} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Template ID <span className="text-red-400">*</span></label>
+            <input
+              type="number"
+              value={launchForm.template_id}
+              onChange={(e) => setLaunchForm({ ...launchForm, template_id: e.target.value })}
+              required
+              placeholder="0"
+              min="0"
+              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Name <span className="text-slate-500">(optional)</span></label>
+            <input
+              type="text"
+              value={launchForm.name}
+              onChange={(e) => setLaunchForm({ ...launchForm, name: e.target.value })}
+              placeholder="my-vm"
+              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+            />
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => { setShowLaunchModal(false); setLaunchForm({ template_id: '', name: '' }) }}
+              className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={createVM.isPending}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+            >
+              {createVM.isPending ? 'Launching…' : 'Launch'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Confirm Destroy */}
+      <ConfirmDialog
+        isOpen={confirmDestroyId != null}
+        onClose={() => setConfirmDestroyId(null)}
+        onConfirm={() => destroyVM.mutate(confirmDestroyId)}
+        title="Destroy VM"
+        message="Are you sure you want to destroy this VM? This action cannot be undone."
+        confirmLabel="Destroy"
+        danger
+      />
+
+      {/* VM Detail Drawer */}
+      {selectedVM && <VMDetailDrawer vm={selectedVM} onClose={() => setSelectedVM(null)} />}
+    </div>
+  )
+}

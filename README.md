@@ -16,7 +16,8 @@ Custom cloud infrastructure built on top of **OpenNebula**, re-implementing clou
 8. [Phase 4 — Disk Storage](#8-phase-4--disk-storage)
 9. [Phase 5 — Container Service](#9-phase-5--container-service)
 10. [Phase 6 — Database Service (DBaaS)](#10-phase-6--database-service-dbaas)
-11. [Implemented Services Roadmap](#11-implemented-services-roadmap)
+11. [Dashboard — Web UI](#11-dashboard--web-ui)
+12. [Implemented Services Roadmap](#12-implemented-services-roadmap)
 
 ---
 
@@ -778,7 +779,80 @@ docker ps --filter "label=cloud_db_user=afonso"
 
 ---
 
-## 11. Implemented Services Roadmap
+## 11. Dashboard — Web UI
+
+A full React 18 + Vite management dashboard is included in the `dashboard/` directory.
+
+### Quick start (all services with one command)
+
+Make sure the **SSH tunnel is active** first, then from the project root:
+
+```bash
+bash scripts/start_all.sh
+```
+
+This starts all three services in the background and streams their logs to your terminal:
+
+| Service | URL |
+|---------|-----|
+| Dashboard (React) | http://localhost:5173 |
+| API (FastAPI) | http://localhost:8000 |
+| API docs (Swagger) | http://localhost:8000/docs |
+| MinIO UI | http://localhost:9003 |
+
+Press `Ctrl+C` to stop everything cleanly.
+
+> Individual logs are also written to `/tmp/cloud_minio.log`, `/tmp/cloud_api.log`, `/tmp/cloud_dashboard.log`.
+
+### Manual start (separate terminals)
+
+```bash
+# Terminal 1 — MinIO
+bash scripts/start_minio.sh
+
+# Terminal 2 — API
+uvicorn api.main:app --reload --port 8000
+
+# Terminal 3 — Dashboard
+cd dashboard && npm run dev
+```
+
+### Dashboard pages
+
+| Page | Route | Description |
+|------|-------|-------------|
+| Overview | `/dashboard` | Summary cards, live CPU chart, autoscaler panel, quick actions |
+| Virtual Machines | `/dashboard/vms` | Provision/destroy VMs, live metrics, SLA status |
+| Containers | `/dashboard/containers` | Launch/start/stop/remove Docker containers, grid + table view |
+| Storage | `/dashboard/storage` | Drag-and-drop upload, file browser, download/delete |
+| Databases | `/dashboard/databases` | Provision PostgreSQL instances, reveal credentials |
+| Settings | `/dashboard/settings` | Update profile, change password, delete account |
+
+### Dashboard tech stack
+
+- **React 18 + Vite** — fast dev server and build
+- **Tailwind CSS** — dark mode by default (toggle in top bar)
+- **TanStack React Query** — data fetching with 10s auto-refresh on live resources
+- **Zustand** — auth state (JWT token persisted in `localStorage`)
+- **Recharts** — live CPU usage area chart on the overview page
+- **react-hot-toast** — toast notifications for every API action
+
+### First-time setup
+
+```bash
+cd dashboard && npm install
+```
+
+The dashboard reads the API base URL from `dashboard/.env` (created from `.env.example`):
+
+```bash
+cp dashboard/.env.example dashboard/.env
+# Edit VITE_API_URL if your backend runs on a different port
+```
+
+---
+
+## 12. Implemented Services Roadmap
 
 | Phase | Service | Status |
 |-------|---------|--------|
