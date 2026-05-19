@@ -23,14 +23,12 @@ VM_STATES = {
     8: "POWEROFF",
 }
 
-
 def create_vm(
     name: str,
     template_id: int = DEFAULT_TEMPLATE_ID,
     one_user_id: int = None,
     cpu: float = None,
     memory_mb: int = None,
-    ssh_key: str = None,
     user_data: str = None,
 ) -> int:
     """
@@ -42,21 +40,27 @@ def create_vm(
     # Build extra configuration (template overrides)
     overrides = []
     if cpu:
-        overrides.append(f"CPU = {cpu}")
+        overrides.append(f'CPU="{cpu}"')
     if memory_mb:
-        overrides.append(f"MEMORY = {memory_mb}")
+        overrides.append(f'MEMORY="{memory_mb}"')
 
-    context = []
-    if ssh_key:
-        context.append(f'SSH_PUBLIC_KEY = "{ssh_key}"')
+    context = [
+        'NETWORK = "YES"',
+        'TOKEN = "YES"'
+    ]
     if user_data:
-        # OpenNebula expects context variables for scripts
-        context.append(f'STARTUP_SCRIPT = "{user_data}"')
+        # Escape double quotes for OpenNebula template syntax
+        safe_data = user_data.strip().replace('\\', '\\\\').replace('"', '\\"')
+        context.append(f'STARTUP_SCRIPT = "{safe_data}"')
 
     if context:
-        overrides.append("CONTEXT = [\n  " + ",\n  ".join(context) + "\n]")
+        overrides.append("CONTEXT = [ " + " , ".join(context) + " ]")
 
     extra_config = "\n".join(overrides)
+
+    
+    # Debug: you can check the generated config in the API logs
+    print(f"DEBUG: Generating VM with config:\n{extra_config}")
 
     one_vm_id = client.template.instantiate(template_id, name, False, extra_config, False)
     if one_user_id is not None:

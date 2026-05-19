@@ -3,6 +3,6 @@ minio_data/
 *.db 
 *.json
 *.log
-.db
+*.db
 .env
 node_modules/

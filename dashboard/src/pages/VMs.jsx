@@ -70,7 +70,6 @@ export default function VMs() {
     name: '',
     cpu: '',
     memory_mb: '',
-    ssh_key: '',
     user_data: ''
   })
 
@@ -82,13 +81,12 @@ export default function VMs() {
         name: launchForm.name || undefined,
         cpu: launchForm.cpu ? parseFloat(launchForm.cpu) : undefined,
         memory_mb: launchForm.memory_mb ? parseInt(launchForm.memory_mb, 10) : undefined,
-        ssh_key: launchForm.ssh_key || undefined,
         user_data: launchForm.user_data || undefined
       },
       {
         onSuccess: () => {
           setShowLaunchModal(false)
-          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', ssh_key: '', user_data: '' })
+          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', user_data: '' })
         },
       }
     )
@@ -235,7 +233,7 @@ export default function VMs() {
         isOpen={showLaunchModal} 
         onClose={() => { 
           setShowLaunchModal(false); 
-          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', ssh_key: '', user_data: '' }) 
+          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', user_data: '' }) 
         }} 
         title="Launch Virtual Machine"
       >
@@ -292,17 +290,6 @@ export default function VMs() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">SSH Public Key</label>
-            <textarea
-              value={launchForm.ssh_key}
-              onChange={(e) => setLaunchForm({ ...launchForm, ssh_key: e.target.value })}
-              placeholder="ssh-rsa AAAAB3Nza..."
-              rows={2}
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full text-xs font-mono"
-            />
-          </div>
-
-          <div>
             <label className="block text-sm font-medium text-slate-300 mb-1.5">Startup Script (User Data)</label>
             <textarea
               value={launchForm.user_data}
@@ -316,7 +303,7 @@ export default function VMs() {
           <div className="flex gap-3 pt-4 sticky bottom-0 bg-slate-900 pb-2">
             <button
               type="button"
-              onClick={() => { setShowLaunchModal(false); setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', ssh_key: '', user_data: '' }) }}
+              onClick={() => { setShowLaunchModal(false); setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', user_data: '' }) }}
               className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors"
             >
               Cancel

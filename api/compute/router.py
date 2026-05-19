@@ -57,7 +57,6 @@ def provision_vm(
             one_user_id=current_user.one_user_id,
             cpu=data.cpu,
             memory_mb=data.memory_mb,
-            ssh_key=data.ssh_key,
             user_data=data.user_data,
         )
     except Exception as e:
