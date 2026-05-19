@@ -48,6 +48,28 @@ def create_vm(
         'NETWORK = "YES"',
         'TOKEN = "YES"'
     ]
+
+    # If we have a user ID, try to fetch their public key from their OpenNebula profile
+    if one_user_id is not None:
+        try:
+            user_info = client.user.info(one_user_id)
+            # SSH_PUBLIC_KEY is in the user's TEMPLATE (dict-like object in pyone)
+            template = getattr(user_info, 'TEMPLATE', {})
+            public_key = None
+            if isinstance(template, dict):
+                public_key = template.get('SSH_PUBLIC_KEY')
+            
+            if public_key:
+                context.append(f'SSH_PUBLIC_KEY = "{public_key}"')
+            else:
+                # Fallback to the template variable
+                context.append('SSH_PUBLIC_KEY = "$USER[SSH_PUBLIC_KEY]"')
+        except Exception as e:
+            print(f"DEBUG: Could not fetch user {one_user_id} info: {e}")
+            context.append('SSH_PUBLIC_KEY = "$USER[SSH_PUBLIC_KEY]"')
+    else:
+        context.append('SSH_PUBLIC_KEY = "$USER[SSH_PUBLIC_KEY]"')
+
     if user_data:
         # Escape double quotes for OpenNebula template syntax
         safe_data = user_data.strip().replace('\\', '\\\\').replace('"', '\\"')

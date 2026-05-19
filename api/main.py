@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.database import engine, Base
 from api.auth.router import router as auth_router
 from api.compute.router import router as compute_router
+from api.compute.terminal import router as terminal_router
 from api.compute.autoscaler import autoscaler
 from api.storage.router import router as storage_router
 from api.containers.router import router as containers_router
@@ -40,6 +41,7 @@ app.include_router(compute_router)
 app.include_router(storage_router)
 app.include_router(containers_router)
 app.include_router(databases_router)
+app.include_router(terminal_router)
 
 
 @app.get("/")

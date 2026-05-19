@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Server, Plus, RefreshCw, Trash2, ChevronRight, X } from 'lucide-react'
+import { Server, Plus, RefreshCw, Trash2, ChevronRight, X, Terminal as TerminalIcon } from 'lucide-react'
 import { useVMs, useCreateVM, useDestroyVM } from '../hooks/useVMs'
 import { useClusterStatus } from '../hooks/useClusterStatus'
 import Modal from '../components/shared/Modal'
+import VMTerminal from '../components/VMTerminal'
 import ConfirmDialog from '../components/shared/ConfirmDialog'
 import EmptyState from '../components/shared/EmptyState'
 import SkeletonTable from '../components/shared/SkeletonTable'
@@ -64,6 +65,7 @@ export default function VMs() {
 
   const [showLaunchModal, setShowLaunchModal] = useState(false)
   const [selectedVM, setSelectedVM] = useState(null)
+  const [terminalVM, setTerminalVM] = useState(null)
   const [confirmDestroyId, setConfirmDestroyId] = useState(null)
   const [launchForm, setLaunchForm] = useState({ 
     template_id: '', 
@@ -174,13 +176,23 @@ export default function VMs() {
                     <td className="px-4 py-3 text-slate-300">{vm.memory_mb ?? '—'}</td>
                     <td className="px-4 py-3 text-slate-400">{formatDate(vm.created_at)}</td>
                     <td className="px-4 py-3">
-                      <button
-                        onClick={() => setConfirmDestroyId(vm.id)}
-                        className="p-1.5 rounded text-slate-400 hover:bg-red-500/10 hover:text-red-400 transition-colors"
-                        title="Destroy VM"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setTerminalVM(vm)}
+                          disabled={vm.state !== 'ACTIVE'}
+                          className="p-1.5 rounded text-slate-400 hover:bg-blue-500/10 hover:text-blue-400 transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-400"
+                          title={vm.state === 'ACTIVE' ? 'Open Terminal' : 'VM must be ACTIVE to open terminal'}
+                        >
+                          <TerminalIcon className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setConfirmDestroyId(vm.id)}
+                          className="p-1.5 rounded text-slate-400 hover:bg-red-500/10 hover:text-red-400 transition-colors"
+                          title="Destroy VM"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -332,6 +344,9 @@ export default function VMs() {
 
       {/* VM Detail Drawer */}
       {selectedVM && <VMDetailDrawer vm={selectedVM} onClose={() => setSelectedVM(null)} />}
+
+      {/* VM Terminal */}
+      {terminalVM && <VMTerminal ip={terminalVM.ip_address} onClose={() => setTerminalVM(null)} />}
     </div>
   )
 }
