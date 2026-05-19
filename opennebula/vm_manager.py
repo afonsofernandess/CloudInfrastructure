@@ -24,13 +24,41 @@ VM_STATES = {
 }
 
 
-def create_vm(name: str, template_id: int = DEFAULT_TEMPLATE_ID, one_user_id: int = None) -> int:
+def create_vm(
+    name: str,
+    template_id: int = DEFAULT_TEMPLATE_ID,
+    one_user_id: int = None,
+    cpu: float = None,
+    memory_mb: int = None,
+    ssh_key: str = None,
+    user_data: str = None,
+) -> int:
     """
-    Instantiate a VM from a template. Returns the OpenNebula VM ID.
-    If one_user_id is provided, ownership is transferred to that user after creation.
+    Instantiate a VM from a template with optional hardware overrides and context.
+    Returns the OpenNebula VM ID.
     """
     client = get_client()
-    one_vm_id = client.template.instantiate(template_id, name, False, "", False)
+
+    # Build extra configuration (template overrides)
+    overrides = []
+    if cpu:
+        overrides.append(f"CPU = {cpu}")
+    if memory_mb:
+        overrides.append(f"MEMORY = {memory_mb}")
+
+    context = []
+    if ssh_key:
+        context.append(f'SSH_PUBLIC_KEY = "{ssh_key}"')
+    if user_data:
+        # OpenNebula expects context variables for scripts
+        context.append(f'STARTUP_SCRIPT = "{user_data}"')
+
+    if context:
+        overrides.append("CONTEXT = [\n  " + ",\n  ".join(context) + "\n]")
+
+    extra_config = "\n".join(overrides)
+
+    one_vm_id = client.template.instantiate(template_id, name, False, extra_config, False)
     if one_user_id is not None:
         # Transfer VM ownership from oneadmin to the actual user
         client.vm.chown(one_vm_id, one_user_id, -1)
@@ -68,6 +96,27 @@ def _vm_to_dict(vm) -> dict:
     cpu_usage = float(getattr(monitoring, "CPU", 0) or 0) if monitoring else 0.0
     memory_kb = int(getattr(monitoring, "MEMORY", 0) or 0) if monitoring else 0
 
+    # Extract IP address from NICs
+    ip_address = "—"
+    try:
+        # vm.TEMPLATE is usually a dictionary in pyone for certain configurations
+        template = getattr(vm, "TEMPLATE", {})
+        if isinstance(template, dict):
+            nics = template.get("NIC")
+            if nics:
+                if isinstance(nics, list) and len(nics) > 0:
+                    ip_address = nics[0].get("IP", "—")
+                elif isinstance(nics, dict):
+                    ip_address = nics.get("IP", "—")
+        
+        # Fallback to CONTEXT if NIC doesn't have it
+        if ip_address == "—" and isinstance(template, dict):
+            context = template.get("CONTEXT", {})
+            if isinstance(context, dict):
+                ip_address = context.get("ETH0_IP", "—")
+    except:
+        pass
+
     return {
         "one_vm_id": vm.ID,
         "name": vm.NAME,
@@ -75,6 +124,7 @@ def _vm_to_dict(vm) -> dict:
         "state_code": vm.STATE,
         "lcm_state": vm.LCM_STATE,   # 3 = RUNNING (fully booted)
         "one_owner_id": vm.UID,
+        "ip_address": ip_address,
         "cpu_usage_pct": round(cpu_usage * 100, 1),
         "memory_mb": round(memory_kb / 1024, 1),
     }

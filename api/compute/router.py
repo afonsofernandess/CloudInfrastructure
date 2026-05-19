@@ -27,6 +27,7 @@ def _build_vm_response(instance: VMInstance) -> dict:
         "template_id": instance.template_id,
         "created_at": instance.created_at,
         "state": live["state"],
+        "ip_address": live.get("ip_address", "—"),
         "cpu_usage_pct": live["cpu_usage_pct"],
         "memory_mb": live["memory_mb"],
     }
@@ -50,7 +51,15 @@ def provision_vm(
     name = data.name or f"vm-user{current_user.id}-{int(datetime.now(timezone.utc).timestamp())}"
 
     try:
-        one_vm_id = create_vm(name, data.template_id, current_user.one_user_id)
+        one_vm_id = create_vm(
+            name=name,
+            template_id=data.template_id,
+            one_user_id=current_user.one_user_id,
+            cpu=data.cpu,
+            memory_mb=data.memory_mb,
+            ssh_key=data.ssh_key,
+            user_data=data.user_data,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenNebula error: {e}")
 

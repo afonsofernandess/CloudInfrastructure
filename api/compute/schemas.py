@@ -6,6 +6,10 @@ from typing import Optional
 class VMCreate(BaseModel):
     name: Optional[str] = None          # auto-generated if not provided
     template_id: Optional[int] = 0      # defaults to Alpine Linux 3.20
+    cpu: Optional[float] = None         # override CPU (e.g. 0.5)
+    memory_mb: Optional[int] = None     # override Memory (e.g. 1024)
+    ssh_key: Optional[str] = None       # SSH public key for access
+    user_data: Optional[str] = None      # Shell script to run on boot
 
 
 class VMResponse(BaseModel):
@@ -14,6 +18,7 @@ class VMResponse(BaseModel):
     name: str
     template_id: int
     state: str
+    ip_address: str
     cpu_usage_pct: float
     memory_mb: float
     created_at: datetime
