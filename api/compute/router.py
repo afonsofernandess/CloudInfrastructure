@@ -54,7 +54,7 @@ def provision_vm(
         one_vm_id = create_vm(
             name=name,
             template_id=data.template_id,
-            one_user_id=current_user.one_user_id,
+            user_id=current_user.one_user_id,
             cpu=data.cpu,
             memory_mb=data.memory_mb,
             user_data=data.user_data,

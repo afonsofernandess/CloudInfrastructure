@@ -83,8 +83,39 @@ class AutoScaler:
         # Scale UP
         if avg_cpu > sla.SCALE_UP_CPU_PCT and total < sla.MAX_VMS:
             name = f"autoscale-vm-{int(datetime.now(timezone.utc).timestamp())}"
-            one_vm_id = create_vm(name, sla.DEFAULT_TEMPLATE_ID)
-            log.info("Scaled UP — created VM '%s' (one_vm_id=%d)", name, one_vm_id)
+            
+            # Find the user who should own this VM (the one whose VMs are busy)
+            target_user_id = None
+            local_user_id = None
+            all_vms = list_all_vms()
+            for vm in all_vms:
+                if vm["state"] == "ACTIVE" and vm["one_owner_id"] != 0: # Not oneadmin
+                    target_user_id = vm["one_owner_id"]
+                    # Get our local user_id from the DB
+                    db = SessionLocal()
+                    inst = db.query(VMInstance).filter(VMInstance.one_vm_id == vm["one_vm_id"]).first()
+                    if inst:
+                        local_user_id = inst.user_id
+                    db.close()
+                    break
+            
+            # If we found a user, create the VM for them
+            one_vm_id = create_vm(name, sla.DEFAULT_TEMPLATE_ID, user_id=target_user_id)
+            
+            # Create the local DB record so they see it in the dashboard
+            if local_user_id:
+                db = SessionLocal()
+                new_inst = VMInstance(
+                    user_id=local_user_id,
+                    one_vm_id=one_vm_id,
+                    name=name,
+                    template_id=sla.DEFAULT_TEMPLATE_ID
+                )
+                db.add(new_inst)
+                db.commit()
+                db.close()
+                
+            log.info("Scaled UP — created VM '%s' (one_vm_id=%d) for user_id=%s", name, one_vm_id, target_user_id)
             return
 
         # Scale DOWN — only consider autoscaler-managed VMs (never touch user VMs)
