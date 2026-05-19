@@ -1,14 +1,17 @@
 import asyncio
 import paramiko
 from fastapi import APIRouter, WebSocket
+import os
+# pip install python-dotenv
+from dotenv import load_dotenv
 
 router = APIRouter(prefix="/terminal", tags=["terminal"])
-
+load_dotenv()
 # NOW USING THE SSH TUNNEL
-GATEWAY_IP = "127.0.0.1" 
-GATEWAY_PORT = 2222
-GATEWAY_USER = "angelo"
-GATEWAY_PASSWORD = "ronaldo1" # <-- STILL NEED YOUR PASSWORD HERE
+GATEWAY_IP = os.getenv("GATEWAY_IP")
+GATEWAY_PORT = int(os.getenv("GATEWAY_PORT"))
+GATEWAY_USER = os.getenv("GATEWAY_USER")
+GATEWAY_PASSWORD = os.getenv("GATEWAY_PASSWORD") # <-- STILL NEED YOUR PASSWORD HERE
 
 @router.websocket("/{vm_ip}")
 async def vm_terminal(websocket: WebSocket, vm_ip: str):
@@ -17,37 +20,52 @@ async def vm_terminal(websocket: WebSocket, vm_ip: str):
     gateway_client = paramiko.SSHClient()
     gateway_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     
+    vm_client = paramiko.SSHClient()
+    vm_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
     try:
-        # 1. Connect to Gateway via the tunnel (localhost:2222)
-        print(f"DEBUG: Connecting to Gateway as user '{GATEWAY_USER}' via localhost:{GATEWAY_PORT}...")
+        # 1. Connect to Gateway (PonchaLaptop)
+        print(f"DEBUG: Connecting to Gateway {GATEWAY_USER}@{GATEWAY_IP}:{GATEWAY_PORT}...")
+        gateway_client.connect(
+            GATEWAY_IP, 
+            port=GATEWAY_PORT, 
+            username=GATEWAY_USER, 
+            password=GATEWAY_PASSWORD,
+            timeout=10
+        )
         
-        def gateway_handler(title, instructions, prompt_list):
-            return [GATEWAY_PASSWORD] * len(prompt_list)
-
-        try:
-            gateway_client.connect(
-                GATEWAY_IP, 
-                port=GATEWAY_PORT, 
-                username=GATEWAY_USER, 
-                password=GATEWAY_PASSWORD, 
-                timeout=15,
-                allow_agent=True
-            )
-        except paramiko.ssh_exception.AuthenticationException:
-            print("DEBUG: Gateway password auth failed, trying interactive...")
-            gateway_client.get_transport().auth_interactive(GATEWAY_USER, gateway_handler)
+        # 2. Open a tunnel (direct-tcpip) to the VM's port 22
+        transport = gateway_client.get_transport()
+        vm_channel = transport.open_channel(
+            "direct-tcpip", 
+            (vm_ip, 22), 
+            (GATEWAY_IP, 0)
+        )
         
-        # Start a full interactive shell on the gateway
-        print(f"DEBUG: Starting interactive shell on gateway...")
-        channel = gateway_client.invoke_shell(term='xterm', width=80, height=24)
+        # 3. Connect to the VM *through* the tunnel
+        print(f"DEBUG: Connecting to VM {vm_ip} via tunnel...")
+        
+        # Look for default private keys on your Mac
+        home = os.path.expanduser("~")
+        possible_keys = [
+            os.path.join(home, ".ssh", "id_rsa"),
+            os.path.join(home, ".ssh", "id_ed25519"),
+            os.path.join(home, ".ssh", "id_dsa"),
+        ]
+        
+        vm_client.connect(
+            vm_ip,
+            username="root",
+            sock=vm_channel,
+            timeout=10,
+            key_filename=[k for k in possible_keys if os.path.exists(k)],
+            allow_agent=True
+        )
+        
+        # 4. Start the interactive shell on the VM
+        channel = vm_client.invoke_shell(term='xterm', width=80, height=24)
         channel.setblocking(False)
 
-        # Send the SSH command to the shell
-        print(f"DEBUG: Sending SSH command to VM {vm_ip}...")
-        channel.send(f"ssh -o StrictHostKeyChecking=no root@{vm_ip}\n")
-
-        channel.setblocking(False)
-        
         async def b_to_ws():
             while True:
                 try:
@@ -62,15 +80,16 @@ async def vm_terminal(websocket: WebSocket, vm_ip: str):
                     data = await websocket.receive_text()
                     channel.send(data)
                 except Exception: break
-
+        
+        print(f"DEBUG: Terminal session started for {vm_ip}")
         await asyncio.gather(b_to_ws(), ws_to_b())
 
     except Exception as e:
         await websocket.send_text(f"\r\n\x1b[1;31m[Error] Terminal Bridge Failed: {e}\x1b[0m\r\n")
         print(f"ERROR: {e}")
     finally:
+        vm_client.close()
         gateway_client.close()
         try:
             await websocket.close()
-        except:
-            pass
+        except: pass
