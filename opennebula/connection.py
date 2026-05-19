@@ -1,10 +1,16 @@
 import pyone
+import os
+# pip install python-dotenv
+from dotenv import load_dotenv
+
 
 # OpenNebula connection settings
 # Requires SSH tunnel: ssh -L 8080:localhost:80 -L 2633:localhost:2633 ubuntu@[ipaddress]
 ONE_ENDPOINT = "http://localhost:2633/RPC2"
-ONE_USER = "oneadmin"
-ONE_PASSWORD = "xRYVbRZjOf"
+# get credentials from .env file
+load_dotenv()
+ONE_USER = os.getenv("ONE_USER")
+ONE_PASSWORD = os.getenv("ONE_PASSWORD")
 
 
 def get_client() -> pyone.OneServer:

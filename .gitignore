@@ -1,2 +1,8 @@
 **/__pycache__/
 minio_data/
+*.db 
+*.json
+*.log
+.db
+.env
+node_modules/
