@@ -35,3 +35,20 @@ class ClusterStatus(BaseModel):
     max_vms: int
     scale_up_threshold_pct: float
     scale_down_threshold_pct: float
+
+
+class VMMetricResponse(BaseModel):
+    cpu_usage_pct: float
+    memory_mb: float
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class EnergyStats(BaseModel):
+    total_vm_hours: float
+    potential_vm_hours: float
+    hours_saved: float
+    energy_saved_kwh: float
+    co2_saved_kg: float

@@ -49,12 +49,36 @@ class AutoScaler:
                     log.error("AutoScaler error: %s", e)
 
     def _check_and_scale(self):
+        from api.database import SessionLocal
+        from api.compute.models import VMInstance, VMMetric
+
         metrics = get_cluster_metrics()
         active = metrics["active_vms"]
         total = metrics["total_vms"]
         avg_cpu = metrics["avg_cpu_pct"]
 
         log.info("AutoScaler check — active=%d total=%d avg_cpu=%.1f%%", active, total, avg_cpu)
+
+        # Record metrics for graphing
+        db = SessionLocal()
+        try:
+            all_vms = list_all_vms()
+            for vm_data in all_vms:
+                if vm_data["state"] == "ACTIVE":
+                    # Map OpenNebula VM to our local DB record
+                    instance = db.query(VMInstance).filter(VMInstance.one_vm_id == vm_data["one_vm_id"]).first()
+                    if instance:
+                        metric = VMMetric(
+                            vm_instance_id=instance.id,
+                            cpu_usage_pct=vm_data["cpu_usage_pct"],
+                            memory_mb=vm_data["memory_mb"]
+                        )
+                        db.add(metric)
+            db.commit()
+        except Exception as e:
+            log.error("Failed to record metrics: %s", e)
+        finally:
+            db.close()
 
         # Scale UP
         if avg_cpu > sla.SCALE_UP_CPU_PCT and total < sla.MAX_VMS:

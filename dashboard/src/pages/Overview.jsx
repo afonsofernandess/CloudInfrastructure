@@ -3,10 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
-import { Server, Box, Database, Cpu, Activity, Plus, CheckCircle, XCircle } from 'lucide-react'
+import { Server, Box, Database, Cpu, Activity, Plus, CheckCircle, XCircle, Leaf } from 'lucide-react'
 import { useClusterStatus } from '../hooks/useClusterStatus'
 import { useContainers } from '../hooks/useContainers'
 import { useDatabases } from '../hooks/useDatabases'
+import { useEnergyStats } from '../hooks/useMetrics'
 import { formatTime } from '../utils/formatters'
 import clsx from 'clsx'
 
@@ -42,6 +43,8 @@ export default function Overview() {
     chartDataRef.current = next
     setChartData([...next])
   }, [cluster])
+
+  const { data: energy } = useEnergyStats()
 
   const runningContainers = containers?.filter((c) => c.status === 'running').length ?? 0
   const activeDatabases = databases?.filter((d) => d.status === 'running').length ?? 0
@@ -84,7 +87,7 @@ export default function Overview() {
       </div>
 
       {/* Bottom panels */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Autoscaler panel */}
         <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 space-y-4">
           <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Autoscaler</h2>
@@ -107,20 +110,12 @@ export default function Overview() {
               <span className="text-slate-400 block text-xs mb-0.5">Max VMs</span>
               <span className="text-slate-100 font-semibold">{cluster?.max_vms ?? '—'}</span>
             </div>
-            <div>
-              <span className="text-slate-400 block text-xs mb-0.5">Scale Up Threshold</span>
-              <span className="text-slate-100 font-semibold">{cluster?.scale_up_threshold_pct ?? '—'}%</span>
-            </div>
-            <div>
-              <span className="text-slate-400 block text-xs mb-0.5">Scale Down Threshold</span>
-              <span className="text-slate-100 font-semibold">{cluster?.scale_down_threshold_pct ?? '—'}%</span>
-            </div>
           </div>
           {/* VM utilization bar */}
           {cluster && (
             <div>
               <div className="flex justify-between text-xs text-slate-400 mb-1">
-                <span>VM Usage</span>
+                <span>Capacity Usage</span>
                 <span>{cluster.total_vms} / {cluster.max_vms}</span>
               </div>
               <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
@@ -133,50 +128,72 @@ export default function Overview() {
           )}
         </div>
 
+        {/* Energy Savings panel */}
+        <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 space-y-4">
+          <h2 className="text-sm font-semibold text-green-400 uppercase tracking-wider flex items-center gap-2">
+            <Leaf className="w-4 h-4" />
+            Sustainability
+          </h2>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-slate-400 block text-xs mb-0.5">Hours Saved</span>
+              <span className="text-slate-100 font-bold text-lg">{energy?.hours_saved ?? 0}h</span>
+            </div>
+            <div>
+              <span className="text-slate-400 block text-xs mb-0.5">Energy Saved</span>
+              <span className="text-green-400 font-bold text-lg">{energy?.energy_saved_kwh ?? 0} kWh</span>
+            </div>
+            <div className="col-span-2 pt-2 border-t border-slate-800">
+               <div className="flex justify-between items-center">
+                  <span className="text-xs text-slate-400 uppercase tracking-wider">CO2 Reduction</span>
+                  <span className="text-sm font-semibold text-slate-100">{energy?.co2_saved_kg ?? 0} kg</span>
+               </div>
+               <div className="text-[10px] text-slate-500 mt-1 italic">* Estimated vs max capacity baseline</div>
+            </div>
+          </div>
+        </div>
+
         {/* Quick actions */}
         <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 space-y-4">
           <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Quick Actions</h2>
           <div className="space-y-3">
             <button
               onClick={() => navigate('/dashboard/vms')}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-100 transition-colors"
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-100 transition-colors"
             >
-              <div className="p-2 bg-blue-600/20 rounded-lg">
+              <div className="p-1.5 bg-blue-600/20 rounded-lg">
                 <Server className="w-4 h-4 text-blue-400" />
               </div>
               <div className="text-left">
-                <div className="text-sm font-medium">Launch VM</div>
-                <div className="text-xs text-slate-400">Provision a new virtual machine</div>
+                <div className="text-xs font-medium">Launch VM</div>
               </div>
-              <Plus className="w-4 h-4 text-slate-400 ml-auto" />
+              <Plus className="w-3 h-3 text-slate-400 ml-auto" />
             </button>
 
             <button
               onClick={() => navigate('/dashboard/containers')}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-100 transition-colors"
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-100 transition-colors"
             >
-              <div className="p-2 bg-purple-600/20 rounded-lg">
+              <div className="p-1.5 bg-purple-600/20 rounded-lg">
                 <Box className="w-4 h-4 text-purple-400" />
               </div>
               <div className="text-left">
-                <div className="text-sm font-medium">New Container</div>
-                <div className="text-xs text-slate-400">Run a Docker container</div>
+                <div className="text-xs font-medium">New Container</div>
               </div>
-              <Plus className="w-4 h-4 text-slate-400 ml-auto" />
+              <Plus className="w-3 h-3 text-slate-400 ml-auto" />
             </button>
 
             <button
               onClick={() => navigate('/dashboard/databases')}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-100 transition-colors"
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-100 transition-colors"
             >
-              <div className="p-2 bg-orange-600/20 rounded-lg">
+              <div className="p-1.5 bg-orange-600/20 rounded-lg">
                 <Database className="w-4 h-4 text-orange-400" />
               </div>
               <div className="text-left">
-                <div className="text-sm font-medium">New Database</div>
-                <div className="text-xs text-slate-400">Provision a PostgreSQL instance</div>
+                <div className="text-xs font-medium">New Database</div>
               </div>
-              <Plus className="w-4 h-4 text-slate-400 ml-auto" />
+              <Plus className="w-3 h-3 text-slate-400 ml-auto" />
             </button>
           </div>
         </div>

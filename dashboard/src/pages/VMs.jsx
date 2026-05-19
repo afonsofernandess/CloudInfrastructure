@@ -10,6 +10,88 @@ import SkeletonTable from '../components/shared/SkeletonTable'
 import { vmStateColor, formatDate } from '../utils/formatters'
 import clsx from 'clsx'
 
+import { 
+  ResponsiveContainer, 
+  AreaChart, 
+  Area, 
+  XAxis, 
+  YAxis, 
+  Tooltip, 
+  CartesianGrid 
+} from 'recharts'
+import { useVMMetrics } from '../hooks/useMetrics'
+
+function VMMetricsGraph({ vmId }) {
+  const { data: metrics, isLoading } = useVMMetrics(vmId)
+
+  if (isLoading || !metrics?.length) {
+    return (
+      <div className="h-48 flex items-center justify-center bg-slate-800/50 rounded-lg border border-slate-700">
+        <span className="text-xs text-slate-500">Loading historical data...</span>
+      </div>
+    )
+  }
+
+  // Format data for chart
+  const chartData = metrics.map(m => ({
+    time: new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    cpu: m.cpu_usage_pct,
+    memory: m.memory_mb
+  }))
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">CPU Usage History (%)</h4>
+        <div className="h-32 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData}>
+              <defs>
+                <linearGradient id="colorCpu" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+              <XAxis dataKey="time" hide />
+              <YAxis hide domain={[0, 100]} />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
+                itemStyle={{ fontSize: '12px' }}
+              />
+              <Area type="monotone" dataKey="cpu" stroke="#3b82f6" fillOpacity={1} fill="url(#colorCpu)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+      
+      <div>
+        <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Memory History (MB)</h4>
+        <div className="h-32 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData}>
+              <defs>
+                <linearGradient id="colorMem" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+              <XAxis dataKey="time" hide />
+              <YAxis hide domain={['auto', 'auto']} />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
+                itemStyle={{ fontSize: '12px' }}
+              />
+              <Area type="monotone" dataKey="memory" stroke="#8b5cf6" fillOpacity={1} fill="url(#colorMem)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function VMDetailDrawer({ vm, onClose }) {
   if (!vm) return null
   return (
@@ -25,23 +107,28 @@ function VMDetailDrawer({ vm, onClose }) {
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="px-6 py-5 space-y-4">
-          <Field label="Internal ID" value={vm.id} />
-          <Field label="OpenNebula VM ID" value={vm.one_vm_id} />
-          <Field label="IP Address" value={vm.ip_address || '—'} />
-          <Field label="Name" value={vm.name || '—'} />
-          <Field label="Template ID" value={vm.template_id} />
-          <div>
-            <span className="text-xs text-slate-400 uppercase tracking-wider">State</span>
-            <div className="mt-1">
-              <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', vmStateColor(vm.state))}>
-                {vm.state || '—'}
-              </span>
+        <div className="px-6 py-5 space-y-8">
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="IP Address" value={vm.ip_address || '—'} />
+            <div>
+              <span className="text-xs text-slate-400 uppercase tracking-wider">State</span>
+              <div className="mt-1">
+                <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', vmStateColor(vm.state))}>
+                  {vm.state || '—'}
+                </span>
+              </div>
             </div>
+            <Field label="CPU Usage" value={vm.cpu_usage_pct != null ? `${vm.cpu_usage_pct.toFixed(1)}%` : '—'} />
+            <Field label="Memory (MB)" value={vm.memory_mb ?? '—'} />
           </div>
-          <Field label="CPU Usage" value={vm.cpu_usage_pct != null ? `${vm.cpu_usage_pct.toFixed(1)}%` : '—'} />
-          <Field label="Memory (MB)" value={vm.memory_mb ?? '—'} />
-          <Field label="Created" value={formatDate(vm.created_at)} />
+
+          <VMMetricsGraph vmId={vm.id} />
+
+          <div className="pt-4 border-t border-slate-800 space-y-3">
+             <Field label="Internal ID" value={vm.id} />
+             <Field label="OpenNebula ID" value={vm.one_vm_id} />
+             <Field label="Created" value={formatDate(vm.created_at)} />
+          </div>
         </div>
       </div>
     </div>
