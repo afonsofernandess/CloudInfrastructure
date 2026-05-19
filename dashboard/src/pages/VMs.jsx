@@ -27,6 +27,7 @@ function VMDetailDrawer({ vm, onClose }) {
         <div className="px-6 py-5 space-y-4">
           <Field label="Internal ID" value={vm.id} />
           <Field label="OpenNebula VM ID" value={vm.one_vm_id} />
+          <Field label="IP Address" value={vm.ip_address || '—'} />
           <Field label="Name" value={vm.name || '—'} />
           <Field label="Template ID" value={vm.template_id} />
           <div>
@@ -64,16 +65,30 @@ export default function VMs() {
   const [showLaunchModal, setShowLaunchModal] = useState(false)
   const [selectedVM, setSelectedVM] = useState(null)
   const [confirmDestroyId, setConfirmDestroyId] = useState(null)
-  const [launchForm, setLaunchForm] = useState({ template_id: '', name: '' })
+  const [launchForm, setLaunchForm] = useState({ 
+    template_id: '', 
+    name: '',
+    cpu: '',
+    memory_mb: '',
+    ssh_key: '',
+    user_data: ''
+  })
 
   const handleLaunch = (e) => {
     e.preventDefault()
     createVM.mutate(
-      { template_id: parseInt(launchForm.template_id, 10), name: launchForm.name || undefined },
+      { 
+        template_id: parseInt(launchForm.template_id, 10), 
+        name: launchForm.name || undefined,
+        cpu: launchForm.cpu ? parseFloat(launchForm.cpu) : undefined,
+        memory_mb: launchForm.memory_mb ? parseInt(launchForm.memory_mb, 10) : undefined,
+        ssh_key: launchForm.ssh_key || undefined,
+        user_data: launchForm.user_data || undefined
+      },
       {
         onSuccess: () => {
           setShowLaunchModal(false)
-          setLaunchForm({ template_id: '', name: '' })
+          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', ssh_key: '', user_data: '' })
         },
       }
     )
@@ -124,6 +139,7 @@ export default function VMs() {
               <thead>
                 <tr className="bg-slate-800 text-slate-400 uppercase text-xs tracking-wider">
                   <th className="px-4 py-3 text-left">Name</th>
+                  <th className="px-4 py-3 text-left">IP Address</th>
                   <th className="px-4 py-3 text-left">ONE ID</th>
                   <th className="px-4 py-3 text-left">State</th>
                   <th className="px-4 py-3 text-left">CPU %</th>
@@ -147,6 +163,7 @@ export default function VMs() {
                         <ChevronRight className="w-3.5 h-3.5" />
                       </button>
                     </td>
+                    <td className="px-4 py-3 font-mono text-xs text-blue-400">{vm.ip_address || '—'}</td>
                     <td className="px-4 py-3 text-slate-400">{vm.one_vm_id ?? '—'}</td>
                     <td className="px-4 py-3">
                       <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', vmStateColor(vm.state))}>
@@ -214,35 +231,92 @@ export default function VMs() {
         </div>
       )}
 
-      {/* Launch Modal */}
-      <Modal isOpen={showLaunchModal} onClose={() => { setShowLaunchModal(false); setLaunchForm({ template_id: '', name: '' }) }} title="Launch Virtual Machine">
-        <form onSubmit={handleLaunch} className="space-y-4">
+      <Modal 
+        isOpen={showLaunchModal} 
+        onClose={() => { 
+          setShowLaunchModal(false); 
+          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', ssh_key: '', user_data: '' }) 
+        }} 
+        title="Launch Virtual Machine"
+      >
+        <form onSubmit={handleLaunch} className="space-y-4 max-h-[70vh] overflow-y-auto px-1">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Template ID <span className="text-red-400">*</span></label>
+              <input
+                type="number"
+                value={launchForm.template_id}
+                onChange={(e) => setLaunchForm({ ...launchForm, template_id: e.target.value })}
+                required
+                placeholder="0"
+                min="0"
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Name</label>
+              <input
+                type="text"
+                value={launchForm.name}
+                onChange={(e) => setLaunchForm({ ...launchForm, name: e.target.value })}
+                placeholder="my-vm"
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">CPU Override</label>
+              <input
+                type="number"
+                step="0.1"
+                value={launchForm.cpu}
+                onChange={(e) => setLaunchForm({ ...launchForm, cpu: e.target.value })}
+                placeholder="0.5"
+                min="0.1"
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Memory (MB)</label>
+              <input
+                type="number"
+                value={launchForm.memory_mb}
+                onChange={(e) => setLaunchForm({ ...launchForm, memory_mb: e.target.value })}
+                placeholder="1024"
+                min="128"
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+              />
+            </div>
+          </div>
+
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">Template ID <span className="text-red-400">*</span></label>
-            <input
-              type="number"
-              value={launchForm.template_id}
-              onChange={(e) => setLaunchForm({ ...launchForm, template_id: e.target.value })}
-              required
-              placeholder="0"
-              min="0"
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">SSH Public Key</label>
+            <textarea
+              value={launchForm.ssh_key}
+              onChange={(e) => setLaunchForm({ ...launchForm, ssh_key: e.target.value })}
+              placeholder="ssh-rsa AAAAB3Nza..."
+              rows={2}
+              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full text-xs font-mono"
             />
           </div>
+
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">Name <span className="text-slate-500">(optional)</span></label>
-            <input
-              type="text"
-              value={launchForm.name}
-              onChange={(e) => setLaunchForm({ ...launchForm, name: e.target.value })}
-              placeholder="my-vm"
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Startup Script (User Data)</label>
+            <textarea
+              value={launchForm.user_data}
+              onChange={(e) => setLaunchForm({ ...launchForm, user_data: e.target.value })}
+              placeholder="#!/bin/sh&#10;apk add python3"
+              rows={3}
+              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full text-xs font-mono"
             />
           </div>
-          <div className="flex gap-3 pt-2">
+
+          <div className="flex gap-3 pt-4 sticky bottom-0 bg-slate-900 pb-2">
             <button
               type="button"
-              onClick={() => { setShowLaunchModal(false); setLaunchForm({ template_id: '', name: '' }) }}
+              onClick={() => { setShowLaunchModal(false); setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', ssh_key: '', user_data: '' }) }}
               className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors"
             >
               Cancel
