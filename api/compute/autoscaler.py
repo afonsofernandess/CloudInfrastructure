@@ -31,6 +31,8 @@ class AutoScaler:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._stop_event = threading.Event()
         self.enabled = True
+        self._last_scale_up = datetime.min.replace(tzinfo=timezone.utc)
+        self._last_scale_down = datetime.min.replace(tzinfo=timezone.utc)
 
     def start(self):
         log.info("AutoScaler started (interval=%ss)", sla.CHECK_INTERVAL_SEC)
@@ -81,8 +83,14 @@ class AutoScaler:
             db.close()
 
         # Scale UP
+        now = datetime.now(timezone.utc)
         if avg_cpu > sla.SCALE_UP_CPU_PCT and total < sla.MAX_VMS:
-            name = f"autoscale-vm-{int(datetime.now(timezone.utc).timestamp())}"
+            # Cooldown check: Wait at least 2 minutes between scale-ups
+            if (now - self._last_scale_up).total_seconds() < 120:
+                log.info("Scale UP requested but in COOLDOWN (%.1fs left)", 120 - (now - self._last_scale_up).total_seconds())
+                return
+
+            name = f"autoscale-vm-{int(now.timestamp())}"
             
             # Find the user who should own this VM (the one whose VMs are busy)
             target_user_id = None
@@ -115,13 +123,12 @@ class AutoScaler:
                 db.commit()
                 db.close()
                 
+            self._last_scale_up = now
             log.info("Scaled UP — created VM '%s' (one_vm_id=%d) for user_id=%s", name, one_vm_id, target_user_id)
             return
 
         # Scale DOWN — only consider autoscaler-managed VMs (never touch user VMs)
         if avg_cpu < sla.SCALE_DOWN_CPU_PCT and total > sla.MIN_VMS:
-            now = datetime.now(timezone.utc)
-            all_vms = list_all_vms()
             # Only VMs created by the autoscaler are eligible for removal
             autoscale_vms = [
                 vm for vm in all_vms
@@ -133,10 +140,12 @@ class AutoScaler:
                 if vm["cpu_usage_pct"] < sla.SCALE_DOWN_CPU_PCT:
                     if vid not in _idle_since:
                         _idle_since[vid] = now
-                    elif (now - _idle_since[vid]).seconds >= sla.SCALE_DOWN_WINDOW_SEC:
+                    # Testing window: 60 seconds of idle instead of 300
+                    elif (now - _idle_since[vid]).total_seconds() >= 300:
                         destroy_vm(vid)
                         _idle_since.pop(vid, None)
-                        log.info("Scaled DOWN — destroyed autoscale VM one_vm_id=%d (idle >%ds)", vid, sla.SCALE_DOWN_WINDOW_SEC)
+                        self._last_scale_down = now
+                        log.info("Scaled DOWN — destroyed autoscale VM one_vm_id=%d (idle >300s)", vid)
                         return
                 else:
                     _idle_since.pop(vid, None)
