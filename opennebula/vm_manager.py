@@ -26,10 +26,11 @@ VM_STATES = {
 def create_vm(
     name: str,
     template_id: int = DEFAULT_TEMPLATE_ID,
-    one_user_id: int = None,
     cpu: float = None,
     memory_mb: int = None,
     user_data: str = None,
+    user_id: int = None,
+    group_id: int = None,
 ) -> int:
     """
     Instantiate a VM from a template with optional hardware overrides and context.
@@ -50,9 +51,9 @@ def create_vm(
     ]
 
     # If we have a user ID, try to fetch their public key from their OpenNebula profile
-    if one_user_id is not None:
+    if user_id is not None:
         try:
-            user_info = client.user.info(one_user_id)
+            user_info = client.user.info(user_id)
             # SSH_PUBLIC_KEY is in the user's TEMPLATE (dict-like object in pyone)
             template = getattr(user_info, 'TEMPLATE', {})
             public_key = None
@@ -85,9 +86,10 @@ def create_vm(
     print(f"DEBUG: Generating VM with config:\n{extra_config}")
 
     one_vm_id = client.template.instantiate(template_id, name, False, extra_config, False)
-    if one_user_id is not None:
-        # Transfer VM ownership from oneadmin to the actual user
-        client.vm.chown(one_vm_id, one_user_id, -1)
+    # CHOWN to the correct user so they can see it in their dashboard
+    if user_id is not None:
+        # gid -1 means keep current group
+        client.vm.chown(one_vm_id, user_id, group_id if group_id is not None else -1)
     return one_vm_id
 
 
@@ -109,7 +111,10 @@ def list_all_vms() -> list[dict]:
     client = get_client()
     pool = client.vmpool.info(-2, -1, -1, -1)
     vms = pool.VM if hasattr(pool, "VM") else []
-    return [_vm_to_dict(vm) for vm in vms]
+    
+    # We call client.vm.info(vm.ID) for each VM to get the most 
+    # up-to-date MONITORING data, which can be stale in the pool list.
+    return [_vm_to_dict(client.vm.info(vm.ID)) for vm in vms]
 
 
 def list_vms_by_one_user(one_user_id: int) -> list[dict]:
@@ -118,9 +123,18 @@ def list_vms_by_one_user(one_user_id: int) -> list[dict]:
 
 
 def _vm_to_dict(vm) -> dict:
-    monitoring = vm.MONITORING if hasattr(vm, "MONITORING") else None
-    cpu_usage = float(getattr(monitoring, "CPU", 0) or 0) if monitoring else 0.0
-    memory_kb = int(getattr(monitoring, "MEMORY", 0) or 0) if monitoring else 0
+    monitoring = getattr(vm, "MONITORING", {})
+    
+    # Try to get CPU and Memory from monitoring (handle both object and dict)
+    cpu_usage = 0.0
+    memory_kb = 0
+    
+    if isinstance(monitoring, dict):
+        cpu_usage = float(monitoring.get("CPU", 0) or 0)
+        memory_kb = int(monitoring.get("MEMORY", 0) or 0)
+    else:
+        cpu_usage = float(getattr(monitoring, "CPU", 0) or 0)
+        memory_kb = int(getattr(monitoring, "MEMORY", 0) or 0)
 
     # Extract IP address from NICs
     ip_address = "—"
@@ -151,6 +165,6 @@ def _vm_to_dict(vm) -> dict:
         "lcm_state": vm.LCM_STATE,   # 3 = RUNNING (fully booted)
         "one_owner_id": vm.UID,
         "ip_address": ip_address,
-        "cpu_usage_pct": round(cpu_usage * 100, 1),
+        "cpu_usage_pct": round(cpu_usage, 1),
         "memory_mb": round(memory_kb / 1024, 1),
     }
