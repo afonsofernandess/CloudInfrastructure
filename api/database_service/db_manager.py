@@ -115,6 +115,12 @@ def provision_db(username: str, instance_name: str, db_name: str, vm_id: Optiona
             "POSTGRES_PASSWORD": db_password,
         },
         ports={CONTAINER_PORT: None},   # let Docker pick a free host port
+        volumes={
+            f"/var/lib/postgresql/data-{instance_name}": {
+                "bind": "/var/lib/postgresql/data",
+                "mode": "rw"
+            }
+        },
         detach=True,
     )
 
