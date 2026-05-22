@@ -21,6 +21,7 @@ def launch(data: ContainerCreate, current_user: User = Depends(get_current_user)
             name=data.name,
             env=data.env,
             ports=data.ports,
+            vm_id=data.vm_id,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to launch container: {e}")

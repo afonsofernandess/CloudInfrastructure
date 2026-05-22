@@ -71,13 +71,27 @@ def create_vm(
     else:
         context.append('SSH_PUBLIC_KEY = "$USER[SSH_PUBLIC_KEY]"')
 
+    docker_setup = (
+        'echo "nameserver 8.8.8.8" > /etc/resolv.conf\n'
+        'apk update\n'
+        'apk add docker\n'
+        'rc-update add docker boot\n'
+        'service docker start\n'
+    )
     if user_data:
-        # Escape double quotes for OpenNebula template syntax
-        safe_data = user_data.strip().replace('\\', '\\\\').replace('"', '\\"')
-        context.append(f'STARTUP_SCRIPT = "{safe_data}"')
+        full_user_data = docker_setup + user_data
+    else:
+        full_user_data = "#!/bin/sh\n" + docker_setup
+
+    # Escape double quotes for OpenNebula template syntax
+    safe_data = full_user_data.strip().replace('\\', '\\\\').replace('"', '\\"')
+    context.append(f'STARTUP_SCRIPT = "{safe_data}"')
 
     if context:
         overrides.append("CONTEXT = [ " + " , ".join(context) + " ]")
+
+    # Ensure root disk is expanded to 2048 MB (2 GB) on instantiation
+    overrides.append('DISK = [ IMAGE_ID = "0", SIZE = "2048" ]')
 
     extra_config = "\n".join(overrides)
 
