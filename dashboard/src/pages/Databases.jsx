@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Database, Plus, Key, Trash2, Eye, EyeOff, Copy, Check } from 'lucide-react'
 import { useDatabases, useProvisionDB, useDeprovisionDB } from '../hooks/useDatabases'
+import { useVMs } from '../hooks/useVMs'
 import Modal from '../components/shared/Modal'
 import ConfirmDialog from '../components/shared/ConfirmDialog'
 import EmptyState from '../components/shared/EmptyState'
@@ -92,6 +93,7 @@ function CredField({ label, value }) {
 
 export default function Databases() {
   const { data: databases, isLoading } = useDatabases()
+  const { data: vms } = useVMs()
   const provision = useProvisionDB()
   const deprovision = useDeprovisionDB()
 
@@ -99,15 +101,30 @@ export default function Databases() {
   const [credentialsDB, setCredentialsDB] = useState(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [form, setForm] = useState({ name: '', db_name: '' })
+  const [selectedVmId, setSelectedVmId] = useState('')
+
+  const activeVms = vms?.filter((vm) => vm.state === 'ACTIVE') || []
+
+  // Auto-select VM if there is exactly one active
+  useEffect(() => {
+    if (activeVms.length === 1 && !selectedVmId) {
+      setSelectedVmId(activeVms[0].id.toString())
+    }
+  }, [activeVms, selectedVmId])
 
   const handleProvision = (e) => {
     e.preventDefault()
     provision.mutate(
-      { name: form.name, db_name: form.db_name || undefined },
+      {
+        name: form.name,
+        db_name: form.db_name || undefined,
+        vm_id: selectedVmId ? parseInt(selectedVmId, 10) : undefined
+      },
       {
         onSuccess: () => {
           setShowProvisionModal(false)
           setForm({ name: '', db_name: '' })
+          setSelectedVmId(activeVms.length === 1 ? activeVms[0].id.toString() : '')
         },
       }
     )
@@ -152,7 +169,7 @@ export default function Databases() {
                   <th className="px-4 py-3 text-left">Instance Name</th>
                   <th className="px-4 py-3 text-left">Container ID</th>
                   <th className="px-4 py-3 text-left">Status</th>
-                  <th className="px-4 py-3 text-left">Host</th>
+                  <th className="px-4 py-3 text-left">Host VM</th>
                   <th className="px-4 py-3 text-left">Port</th>
                   <th className="px-4 py-3 text-left">DB Name</th>
                   <th className="px-4 py-3 text-left">Created</th>
@@ -160,21 +177,26 @@ export default function Databases() {
                 </tr>
               </thead>
               <tbody>
-                {databases.map((db) => (
-                  <tr key={db.id} className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
-                    <td className="px-4 py-3 text-slate-100 font-medium">{db.instance_name}</td>
-                    <td className="px-4 py-3 text-slate-400 font-mono text-xs">
-                      {db.container_id ? db.container_id.slice(0, 12) : '—'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', dbStatusColor(db.status))}>
-                        {db.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-slate-400">{db.credentials?.host ?? '—'}</td>
-                    <td className="px-4 py-3 text-slate-400">{db.credentials?.port ?? '—'}</td>
-                    <td className="px-4 py-3 text-slate-400">{db.credentials?.db_name ?? '—'}</td>
-                    <td className="px-4 py-3 text-slate-400">{formatDate(db.created_at)}</td>
+                {databases.map((db) => {
+                  const hostingVm = vms?.find((v) => v.id === db.vm_id)
+                  const vmLabel = hostingVm
+                    ? `${hostingVm.name || `VM #${hostingVm.id}`} (${hostingVm.ip_address})`
+                    : db.credentials?.host || '—'
+                  return (
+                    <tr key={db.id} className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
+                      <td className="px-4 py-3 text-slate-100 font-medium">{db.instance_name}</td>
+                      <td className="px-4 py-3 text-slate-400 font-mono text-xs">
+                        {db.container_id ? db.container_id.slice(0, 12) : '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', dbStatusColor(db.status))}>
+                          {db.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-blue-400 text-xs font-semibold">{vmLabel}</td>
+                      <td className="px-4 py-3 text-slate-400">{db.credentials?.port ?? '—'}</td>
+                      <td className="px-4 py-3 text-slate-400">{db.credentials?.db_name ?? '—'}</td>
+                      <td className="px-4 py-3 text-slate-400">{formatDate(db.created_at)}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1">
                         <button
@@ -194,7 +216,8 @@ export default function Databases() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -204,10 +227,36 @@ export default function Databases() {
       {/* Provision Modal */}
       <Modal
         isOpen={showProvisionModal}
-        onClose={() => { setShowProvisionModal(false); setForm({ name: '', db_name: '' }) }}
+        onClose={() => {
+          setShowProvisionModal(false)
+          setForm({ name: '', db_name: '' })
+          setSelectedVmId(activeVms.length === 1 ? activeVms[0].id.toString() : '')
+        }}
         title="Provision Database"
       >
         <form onSubmit={handleProvision} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Target Virtual Machine <span className="text-red-400">*</span></label>
+            <select
+              value={selectedVmId}
+              onChange={(e) => setSelectedVmId(e.target.value)}
+              required
+              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+            >
+              <option value="" disabled>Select a VM...</option>
+              {activeVms.map((vm) => (
+                <option key={vm.id} value={vm.id}>
+                  {vm.name || `VM #${vm.id}`} ({vm.ip_address || 'No IP'})
+                </option>
+              ))}
+            </select>
+            {activeVms.length === 0 && (
+              <p className="text-xs text-red-400 mt-1">
+                No active VMs found. You must launch and wait for a VM to be ACTIVE before provisioning databases.
+              </p>
+            )}
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1.5">Instance Name <span className="text-red-400">*</span></label>
             <input
