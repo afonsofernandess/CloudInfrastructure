@@ -1,3 +1,4 @@
+import pyone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
@@ -17,8 +18,10 @@ def _build_vm_response(instance: VMInstance) -> dict:
     """Merge local DB record with live OpenNebula metrics."""
     try:
         live = get_vm(instance.one_vm_id)
+    except pyone.OneNoExistsException:
+        live = {"state": "DONE", "cpu_usage_pct": 0.0, "memory_mb": 0.0}
     except Exception:
-        live = {"state": "UNKNOWN", "cpu_usage_pct": 0.0, "memory_mb": 0.0}
+        live = {"state": "UNREACHABLE", "cpu_usage_pct": 0.0, "memory_mb": 0.0}
 
     return {
         "id": instance.id,
@@ -91,7 +94,7 @@ def list_vms(
     for instance in instances:
         response = _build_vm_response(instance)
         # If OpenNebula says it's gone, mark it as terminated locally but don't delete
-        if response["state"] in ("DONE", "UNKNOWN"):
+        if response["state"] == "DONE":
             instance.terminated_at = datetime.now(timezone.utc)
             db.commit()
         else:
