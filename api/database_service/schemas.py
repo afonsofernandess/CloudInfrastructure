@@ -29,3 +29,10 @@ class DBInstanceResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class DBMetricsResponse(BaseModel):
+    active_connections: int
+    db_size: str
+    timestamp: str
+    error: Optional[str] = None

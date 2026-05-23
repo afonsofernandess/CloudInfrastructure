@@ -10,6 +10,7 @@ import string
 import time
 import docker
 from docker.errors import NotFound
+from datetime import datetime, timezone
 
 POSTGRES_IMAGE = "postgres:16-alpine"
 LABEL_KEY = "cloud_db_user"
@@ -226,3 +227,47 @@ def deprovision_db(username: str, container_id: str) -> None:
         raise PermissionError("Database instance does not belong to this user")
 
     container.remove(force=True)
+
+
+def get_db_metrics(username: str, container_id: str, db_user: str, db_name: str, db_password: str) -> dict:
+    """Run queries inside the PostgreSQL container via Docker exec to fetch connection count and size."""
+    import subprocess
+    try:
+        client, container, vm_id = get_db_container_and_client(username, container_id)
+        if not container or container.status != "running" or not vm_id:
+            return {"active_connections": 0, "db_size": "0 kB", "error": "Container is not running"}
+
+        ip = get_vm_ip_by_id(vm_id)
+        if not ip or ip == "localhost":
+            return {"active_connections": 0, "db_size": "0 kB", "error": "Could not resolve VM IP"}
+
+        # Query 1: Active connections
+        cmd_connections = [
+            "ssh", "-o", "StrictHostKeyChecking=no", f"root@{ip}",
+            f"docker exec -e PGPASSWORD={db_password} {container.name} psql -U {db_user} -d {db_name} -t -c \"SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend';\""
+        ]
+        res_conn = subprocess.run(cmd_connections, capture_output=True, text=True, timeout=5)
+        connections = 0
+        if res_conn.returncode == 0:
+            try:
+                connections = int(res_conn.stdout.strip())
+            except ValueError:
+                pass
+
+        # Query 2: Database size
+        cmd_size = [
+            "ssh", "-o", "StrictHostKeyChecking=no", f"root@{ip}",
+            f"docker exec -e PGPASSWORD={db_password} {container.name} psql -U {db_user} -d {db_name} -t -c \"SELECT pg_size_pretty(pg_database_size('{db_name}'));\""
+        ]
+        res_size = subprocess.run(cmd_size, capture_output=True, text=True, timeout=5)
+        db_size = "0 kB"
+        if res_size.returncode == 0:
+            db_size = res_size.stdout.strip()
+
+        return {
+            "active_connections": connections,
+            "db_size": db_size,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    except Exception as e:
+        return {"active_connections": 0, "db_size": "0 kB", "error": str(e)}

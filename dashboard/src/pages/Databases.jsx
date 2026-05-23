@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Database, Plus, Key, Trash2, Eye, EyeOff, Copy, Check } from 'lucide-react'
+import { Database, Plus, Key, Trash2, Eye, EyeOff, Copy, Check, Activity } from 'lucide-react'
 import { useDatabases, useProvisionDB, useDeprovisionDB } from '../hooks/useDatabases'
 import { useVMs } from '../hooks/useVMs'
 import Modal from '../components/shared/Modal'
@@ -9,13 +9,64 @@ import SkeletonTable from '../components/shared/SkeletonTable'
 import { dbStatusColor, formatDate } from '../utils/formatters'
 import clsx from 'clsx'
 import toast from 'react-hot-toast'
+import client from '../api/client'
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid
+} from 'recharts'
 
 const toastStyle = { style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }
+
+function parseSizeToMB(sizeStr) {
+  if (!sizeStr) return 0
+  const match = sizeStr.trim().match(/^([0-9.]+)\s*([a-zA-Z]+)$/)
+  if (!match) return 0
+  const value = parseFloat(match[1])
+  const unit = match[2].toLowerCase()
+  if (unit === 'bytes' || unit === 'b') return value / (1024 * 1024)
+  if (unit === 'kb') return value / 1024
+  if (unit === 'mb') return value
+  if (unit === 'gb') return value * 1024
+  return value
+}
 
 function CredentialsModal({ db, onClose }) {
   const [showPassword, setShowPassword] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [metricsHistory, setMetricsHistory] = useState([])
   const creds = db?.credentials
+
+  useEffect(() => {
+    if (!db) return
+    setMetricsHistory([])
+
+    const fetchMetrics = async () => {
+      try {
+        const res = await client.get(`/databases/${db.id}/metrics`)
+        setMetricsHistory((prev) => {
+          const next = [...prev, {
+            time: new Date(res.data.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            connections: res.data.active_connections,
+            sizeMB: parseSizeToMB(res.data.db_size),
+            sizeRaw: res.data.db_size
+          }]
+          if (next.length > 15) next.shift()
+          return next
+        })
+      } catch (err) {
+        console.error(err)
+      }
+    }
+
+    fetchMetrics()
+    const interval = setInterval(fetchMetrics, 5000)
+    return () => clearInterval(interval)
+  }, [db])
 
   const copyConnectionString = async () => {
     if (!creds?.connection_string) return
@@ -25,57 +76,141 @@ function CredentialsModal({ db, onClose }) {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const latestMetrics = metricsHistory[metricsHistory.length - 1]
+
   return (
-    <Modal isOpen={!!db} onClose={onClose} title="Database Credentials" maxWidth="max-w-lg">
+    <Modal isOpen={!!db} onClose={onClose} title="Database Details & Metrics" maxWidth="max-w-4xl">
       {creds && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <CredField label="Host" value={creds.host} />
-            <CredField label="Port" value={creds.port} />
-            <CredField label="Database" value={creds.db_name} />
-            <CredField label="User" value={creds.db_user} />
-          </div>
-          <div>
-            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Password</span>
-            <div className="relative">
-              <input
-                type={showPassword ? 'text' : 'password'}
-                readOnly
-                value={creds.db_password || ''}
-                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 pr-10 text-slate-100 w-full text-sm font-mono focus:outline-none"
-              />
-              <button
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors"
-              >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Left Column: Credentials */}
+          <div className="space-y-4 flex flex-col justify-between">
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold text-slate-300 border-b border-slate-700 pb-2">Credentials</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <CredField label="Host" value={creds.host} />
+                <CredField label="Port" value={creds.port} />
+                <CredField label="Database" value={creds.db_name} />
+                <CredField label="User" value={creds.db_user} />
+              </div>
+              <div>
+                <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Password</span>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    readOnly
+                    value={creds.db_password || ''}
+                    className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 pr-10 text-slate-100 w-full text-sm font-mono focus:outline-none"
+                  />
+                  <button
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Connection String</span>
+                <div className="relative">
+                  <input
+                    type="text"
+                    readOnly
+                    value={creds.connection_string || ''}
+                    className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 pr-10 text-slate-100 w-full text-xs font-mono focus:outline-none"
+                  />
+                  <button
+                    onClick={copyConnectionString}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors"
+                    title="Copy"
+                  >
+                    {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
             </div>
+            <button
+              onClick={onClose}
+              className="w-full px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors mt-4"
+            >
+              Close
+            </button>
           </div>
-          <div>
-            <span className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Connection String</span>
-            <div className="relative">
-              <input
-                type="text"
-                readOnly
-                value={creds.connection_string || ''}
-                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 pr-10 text-slate-100 w-full text-xs font-mono focus:outline-none"
-              />
-              <button
-                onClick={copyConnectionString}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors"
-                title="Copy"
-              >
-                {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
-              </button>
-            </div>
+
+          {/* Right Column: Live Metrics */}
+          <div className="space-y-4 border-t lg:border-t-0 lg:border-l border-slate-700 pt-4 lg:pt-0 lg:pl-6">
+            <h3 className="text-sm font-semibold text-slate-300 border-b border-slate-700 pb-2 flex items-center gap-1.5">
+              <Activity className="w-4 h-4 text-blue-400" /> Live Performance Metrics
+            </h3>
+            {metricsHistory.length === 0 ? (
+              <div className="h-64 flex items-center justify-center bg-slate-800/20 rounded-lg border border-slate-700/50">
+                <span className="text-xs text-slate-500">Connecting and fetching real-time metrics...</span>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* Stats Row */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3">
+                    <span className="text-xs text-slate-400 uppercase tracking-wider block">Connections</span>
+                    <span className="text-xl font-bold text-slate-100">{latestMetrics?.connections ?? 0}</span>
+                  </div>
+                  <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3">
+                    <span className="text-xs text-slate-400 uppercase tracking-wider block">Database Size</span>
+                    <span className="text-xl font-bold text-slate-100">{latestMetrics?.sizeRaw ?? '—'}</span>
+                  </div>
+                </div>
+
+                {/* Connections Graph */}
+                <div>
+                  <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Active Connections (5s intervals)</h4>
+                  <div className="h-28 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={metricsHistory}>
+                        <defs>
+                          <linearGradient id="colorConnections" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                        <XAxis dataKey="time" hide />
+                        <YAxis hide domain={[0, 'auto']} />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
+                          itemStyle={{ fontSize: '11px' }}
+                        />
+                        <Area type="monotone" dataKey="connections" stroke="#3b82f6" fillOpacity={1} fill="url(#colorConnections)" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Size Graph */}
+                <div>
+                  <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Database Size over time (MB)</h4>
+                  <div className="h-28 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={metricsHistory}>
+                        <defs>
+                          <linearGradient id="colorSize" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                        <XAxis dataKey="time" hide />
+                        <YAxis hide domain={['auto', 'auto']} />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
+                          itemStyle={{ fontSize: '11px' }}
+                        />
+                        <Area type="monotone" dataKey="sizeMB" stroke="#10b981" fillOpacity={1} fill="url(#colorSize)" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-          <button
-            onClick={onClose}
-            className="w-full px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors mt-2"
-          >
-            Close
-          </button>
         </div>
       )}
     </Modal>

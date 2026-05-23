@@ -5,7 +5,7 @@ from api.auth.jwt import get_current_user
 from api.auth.models import User
 from api.database import get_db
 from api.database_service.models import DBInstance
-from api.database_service.schemas import DBProvisionRequest, DBInstanceResponse, DBCredentials
+from api.database_service.schemas import DBProvisionRequest, DBInstanceResponse, DBCredentials, DBMetricsResponse
 from api.database_service import db_manager
 
 router = APIRouter(prefix="/databases", tags=["databases"])
@@ -144,3 +144,27 @@ def deprovision(
 
     db.delete(instance)
     db.commit()
+
+
+# GET /databases/{instance_id}/metrics — get database connection count & size metrics
+@router.get("/{instance_id}/metrics", response_model=DBMetricsResponse)
+def get_database_metrics(
+    instance_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    instance = db.query(DBInstance).filter(
+        DBInstance.id == instance_id,
+        DBInstance.user_id == current_user.id,
+    ).first()
+    if not instance:
+        raise HTTPException(status_code=404, detail="Database instance not found")
+
+    metrics = db_manager.get_db_metrics(
+        username=current_user.username,
+        container_id=instance.container_id,
+        db_user=instance.db_user,
+        db_name=instance.db_name,
+        db_password=instance.db_password,
+    )
+    return metrics
