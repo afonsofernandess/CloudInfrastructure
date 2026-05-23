@@ -7,6 +7,7 @@ from api.database import get_db
 from api.auth.jwt import get_current_user
 from api.auth.models import User
 from api.compute.models import VMInstance, VMMetric
+from api.database_service.models import DBInstance
 from api.compute.schemas import VMCreate, VMResponse, ClusterStatus, VMMetricResponse, EnergyStats
 from api.compute import sla
 from opennebula.vm_manager import create_vm, destroy_vm, get_vm, list_vms_by_one_user
@@ -138,11 +139,32 @@ def terminate_vm(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenNebula error: {e}")
 
+    # --- Cascade cleanup: remove orphaned DB instance records for this VM ---
+    # Containers live inside Docker on the VM and are physically destroyed with it.
+    # But DBInstance records in SQLite would remain pointing to a dead container.
+    # We find which db_instances belonged to this VM by cross-referencing the
+    # vm_id stored in get_db_container_and_client, then delete those records.
+    try:
+        from api.database_service import db_manager
+        user_db_instances = db.query(DBInstance).filter(
+            DBInstance.user_id == current_user.id
+        ).all()
+        for db_inst in user_db_instances:
+            _, _, db_vm_id = db_manager.get_db_container_and_client(
+                current_user.username, db_inst.container_id
+            )
+            if db_vm_id == instance.id:
+                db.delete(db_inst)
+    except Exception:
+        # Non-fatal: VM is already being destroyed, best-effort cleanup
+        pass
+
     instance.terminated_at = datetime.now(timezone.utc)
     db.commit()
-    
-    # We keep the record in the DB (but state UNKNOWN/DONE) so we can calculate total uptime/energy saved later
-    # The list_vms endpoint already filters out DONE VMs from the UI.
+
+    # We keep the VMInstance record in the DB (but state DONE) so we can
+    # calculate total uptime/energy saved later.
+    # The list_vms endpoint already filters out terminated VMs from the UI.
 
 
 # GET /compute/status — current user's VM metrics + SLA info
