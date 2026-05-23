@@ -6,32 +6,111 @@ All container operations filter by this label so users never see each other's co
 
 import docker
 from docker.errors import NotFound, APIError
+from typing import Optional
 
 LABEL_KEY = "cloud_user"
 
 
-def get_client() -> docker.DockerClient:
-    return docker.from_env()
+def get_client(username: str, vm_id: Optional[int] = None) -> docker.DockerClient:
+    """Return a Docker client connected to the user's specified VM or first active VM via SSH."""
+    from api.database import SessionLocal
+    from api.auth.models import User
+    from api.compute.models import VMInstance
+    from opennebula.vm_manager import get_vm
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise RuntimeError(f"User '{username}' not found in database")
+
+        if vm_id is not None:
+            # Look up specific VM
+            inst = db.query(VMInstance).filter(
+                VMInstance.id == vm_id,
+                VMInstance.user_id == user.id,
+                VMInstance.terminated_at == None
+            ).first()
+            if not inst:
+                raise RuntimeError(f"Active VM with ID {vm_id} not found for user '{username}'")
+            instances = [inst]
+        else:
+            # Find active (non-terminated) VMs for this user
+            instances = db.query(VMInstance).filter(
+                VMInstance.user_id == user.id,
+                VMInstance.terminated_at == None
+            ).all()
+
+        for inst in instances:
+            try:
+                live = get_vm(inst.one_vm_id)
+                # Check if it is running and has an IP address
+                if live["state"] == "ACTIVE" and live["lcm_state"] == 3: # 3 = RUNNING
+                    ip = live.get("ip_address")
+                    if ip and ip != "—":
+                        return docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True)
+            except Exception:
+                continue
+
+        if vm_id is not None:
+            raise RuntimeError(f"VM ID {vm_id} is not currently running or accessible.")
+        else:
+            raise RuntimeError(f"No active and running VMs found for user '{username}'. Please provision a VM first.")
+    finally:
+        db.close()
+
+
+def get_all_clients(username: str) -> list[tuple[int, docker.DockerClient]]:
+    """Return a list of (vm_instance_id, docker_client) tuples for all active VMs of the user."""
+    from api.database import SessionLocal
+    from api.auth.models import User
+    from api.compute.models import VMInstance
+    from opennebula.vm_manager import get_vm
+
+    db = SessionLocal()
+    clients = []
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return []
+        instances = db.query(VMInstance).filter(
+            VMInstance.user_id == user.id,
+            VMInstance.terminated_at == None
+        ).all()
+        for inst in instances:
+            try:
+                live = get_vm(inst.one_vm_id)
+                if live["state"] == "ACTIVE" and live["lcm_state"] == 3:
+                    ip = live.get("ip_address")
+                    if ip and ip != "—":
+                        cli = docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True)
+                        clients.append((inst.id, cli))
+            except Exception:
+                continue
+        return clients
+    finally:
+        db.close()
 
 
 def container_label(username: str) -> dict:
     return {LABEL_KEY: username}
 
 
-def launch_container(username: str, image: str, name: str, env: dict = None, ports: list = None) -> dict:
+def launch_container(
+    username: str,
+    image: str,
+    name: str,
+    env: dict = None,
+    ports: list = None,
+    vm_id: Optional[int] = None
+) -> dict:
     """
     Pull image if needed and run a container for the user.
-    - name     : container name (prefixed with username to avoid conflicts)
-    - env      : dict of environment variables e.g. {"MY_VAR": "value"}
-    - ports    : list of container ports to expose e.g. ["80/tcp", "443/tcp"]
-                 host ports are auto-assigned by Docker
-    Returns a dict with container info.
     """
-    client = get_client()
+    client = get_client(username, vm_id)
     full_name = f"{username}-{name}"
 
     # Pre-flight: remove any leftover container with this name that is not running
-    # (e.g. from a previous failed start). Running containers are left alone.
     try:
         existing = client.containers.get(full_name)
         if existing.status != "running":
@@ -67,83 +146,113 @@ def launch_container(username: str, image: str, name: str, env: dict = None, por
         raise RuntimeError(msg) from e
 
     container.reload()
-    return _container_to_dict(container)
+    res = _container_to_dict(container)
+    if vm_id is not None:
+        res["vm_id"] = vm_id
+    else:
+        # Resolve which vm_id we used
+        clients = get_all_clients(username)
+        for vid, cli in clients:
+            try:
+                cli.containers.get(full_name)
+                res["vm_id"] = vid
+                break
+            except Exception:
+                continue
+    return res
 
 
 def list_containers(username: str) -> list[dict]:
-    """List all containers (running or stopped) belonging to the user."""
-    client = get_client()
-    containers = client.containers.list(
-        all=True,
-        filters={"label": f"{LABEL_KEY}={username}"},
-    )
-    return [_container_to_dict(c) for c in containers]
+    """List all containers belonging to the user across all their active VMs."""
+    clients = get_all_clients(username)
+    all_containers = []
+    for vm_id, client in clients:
+        try:
+            containers = client.containers.list(
+                all=True,
+                filters={"label": f"{LABEL_KEY}={username}"},
+            )
+            for c in containers:
+                info = _container_to_dict(c)
+                info["vm_id"] = vm_id
+                all_containers.append(info)
+        except Exception:
+            continue
+    return all_containers
 
 
 def get_container(username: str, container_id: str) -> dict:
-    """Get a single container by ID, verifying it belongs to the user."""
-    client = get_client()
-    try:
-        container = client.containers.get(container_id)
-    except NotFound:
-        raise FileNotFoundError(f"Container '{container_id}' not found")
-
-    if container.labels.get(LABEL_KEY) != username:
-        raise PermissionError("Container does not belong to this user")
-
-    return _container_to_dict(container)
+    """Get a single container by ID, searching across all active VMs."""
+    clients = get_all_clients(username)
+    for vm_id, client in clients:
+        try:
+            container = client.containers.get(container_id)
+            if container.labels.get(LABEL_KEY) == username:
+                info = _container_to_dict(container)
+                info["vm_id"] = vm_id
+                return info
+        except NotFound:
+            continue
+        except Exception:
+            continue
+    raise FileNotFoundError(f"Container '{container_id}' not found on any active VMs")
 
 
 def start_container(username: str, container_id: str) -> dict:
-    """Start a stopped container."""
-    client = get_client()
-    try:
-        container = client.containers.get(container_id)
-    except NotFound:
-        raise FileNotFoundError(f"Container '{container_id}' not found")
-
-    if container.labels.get(LABEL_KEY) != username:
-        raise PermissionError("Container does not belong to this user")
-
-    try:
-        container.start()
-    except Exception as e:
-        msg = str(e)
-        if "port is already allocated" in msg or "Bind for" in msg:
-            raise RuntimeError("Port already in use — stop the other container using that port first") from e
-        raise RuntimeError(msg) from e
-    container.reload()
-    return _container_to_dict(container)
+    """Start a stopped container, searching across all active VMs."""
+    clients = get_all_clients(username)
+    for vm_id, client in clients:
+        try:
+            container = client.containers.get(container_id)
+            if container.labels.get(LABEL_KEY) != username:
+                raise PermissionError("Container does not belong to this user")
+            try:
+                container.start()
+            except Exception as e:
+                msg = str(e)
+                if "port is already allocated" in msg or "Bind for" in msg:
+                    raise RuntimeError("Port already in use — stop the other container using that port first") from e
+                raise RuntimeError(msg) from e
+            container.reload()
+            info = _container_to_dict(container)
+            info["vm_id"] = vm_id
+            return info
+        except NotFound:
+            continue
+    raise FileNotFoundError(f"Container '{container_id}' not found")
 
 
 def stop_container(username: str, container_id: str) -> dict:
-    """Stop a running container."""
-    client = get_client()
-    try:
-        container = client.containers.get(container_id)
-    except NotFound:
-        raise FileNotFoundError(f"Container '{container_id}' not found")
-
-    if container.labels.get(LABEL_KEY) != username:
-        raise PermissionError("Container does not belong to this user")
-
-    container.stop()
-    container.reload()
-    return _container_to_dict(container)
+    """Stop a running container, searching across all active VMs."""
+    clients = get_all_clients(username)
+    for vm_id, client in clients:
+        try:
+            container = client.containers.get(container_id)
+            if container.labels.get(LABEL_KEY) != username:
+                raise PermissionError("Container does not belong to this user")
+            container.stop()
+            container.reload()
+            info = _container_to_dict(container)
+            info["vm_id"] = vm_id
+            return info
+        except NotFound:
+            continue
+    raise FileNotFoundError(f"Container '{container_id}' not found")
 
 
 def remove_container(username: str, container_id: str) -> None:
-    """Stop (if running) and remove a container."""
-    client = get_client()
-    try:
-        container = client.containers.get(container_id)
-    except NotFound:
-        raise FileNotFoundError(f"Container '{container_id}' not found")
-
-    if container.labels.get(LABEL_KEY) != username:
-        raise PermissionError("Container does not belong to this user")
-
-    container.remove(force=True)
+    """Stop and remove a container, searching across all active VMs."""
+    clients = get_all_clients(username)
+    for vm_id, client in clients:
+        try:
+            container = client.containers.get(container_id)
+            if container.labels.get(LABEL_KEY) != username:
+                raise PermissionError("Container does not belong to this user")
+            container.remove(force=True)
+            return
+        except NotFound:
+            continue
+    raise FileNotFoundError(f"Container '{container_id}' not found")
 
 
 def _container_to_dict(container) -> dict:
@@ -154,7 +263,7 @@ def _container_to_dict(container) -> dict:
         "full_id": container.id,
         "name": container.name,
         "image": container.image.tags[0] if container.image.tags else container.attrs["Config"]["Image"],
-        "status": container.status,         # running, exited, created, etc.
+        "status": container.status,
         "ports": ports,
         "created": container.attrs.get("Created", ""),
     }

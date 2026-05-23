@@ -5,22 +5,24 @@ from api.auth.jwt import get_current_user
 from api.auth.models import User
 from api.database import get_db
 from api.database_service.models import DBInstance
-from api.database_service.schemas import DBProvisionRequest, DBInstanceResponse, DBCredentials
+from api.database_service.schemas import DBProvisionRequest, DBInstanceResponse, DBCredentials, DBMetricsResponse
 from api.database_service import db_manager
 
 router = APIRouter(prefix="/databases", tags=["databases"])
 
 
-def _build_response(instance: DBInstance, status_str: str) -> DBInstanceResponse:
+from typing import Optional
+
+def _build_response(instance: DBInstance, status_str: str, host_ip: str, vm_id: Optional[int] = None) -> DBInstanceResponse:
     creds = DBCredentials(
-        host="localhost",
+        host=host_ip,
         port=instance.host_port,
         db_name=instance.db_name,
         db_user=instance.db_user,
         db_password=instance.db_password,
         connection_string=(
             f"postgresql://{instance.db_user}:{instance.db_password}"
-            f"@localhost:{instance.host_port}/{instance.db_name}"
+            f"@{host_ip}:{instance.host_port}/{instance.db_name}"
         ),
     )
     return DBInstanceResponse(
@@ -30,6 +32,7 @@ def _build_response(instance: DBInstance, status_str: str) -> DBInstanceResponse
         status=status_str,
         credentials=creds,
         created_at=instance.created_at,
+        vm_id=vm_id,
     )
 
 
@@ -47,6 +50,7 @@ def provision(
             username=current_user.username,
             instance_name=data.name,
             db_name=db_name,
+            vm_id=data.vm_id,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -66,7 +70,11 @@ def provision(
     db.commit()
     db.refresh(instance)
 
-    return _build_response(instance, "running")
+    host_ip = "localhost"
+    if info["vm_id"]:
+        host_ip = db_manager.get_vm_ip_by_id(info["vm_id"])
+
+    return _build_response(instance, "running", host_ip, info["vm_id"])
 
 
 # GET /databases — list user's database instances
@@ -78,8 +86,14 @@ def list_instances(
     instances = db.query(DBInstance).filter(DBInstance.user_id == current_user.id).all()
     result = []
     for inst in instances:
-        s = db_manager.get_container_status(inst.container_id)
-        result.append(_build_response(inst, s))
+        client, container, vm_id = db_manager.get_db_container_and_client(current_user.username, inst.container_id)
+        status_str = container.status if container else "removed"
+        
+        host_ip = "localhost"
+        if vm_id:
+            host_ip = db_manager.get_vm_ip_by_id(vm_id)
+            
+        result.append(_build_response(inst, status_str, host_ip, vm_id))
     return result
 
 
@@ -97,8 +111,14 @@ def get_instance(
     if not instance:
         raise HTTPException(status_code=404, detail="Database instance not found")
 
-    s = db_manager.get_container_status(instance.container_id)
-    return _build_response(instance, s)
+    client, container, vm_id = db_manager.get_db_container_and_client(current_user.username, instance.container_id)
+    status_str = container.status if container else "removed"
+    
+    host_ip = "localhost"
+    if vm_id:
+        host_ip = db_manager.get_vm_ip_by_id(vm_id)
+
+    return _build_response(instance, status_str, host_ip, vm_id)
 
 
 # DELETE /databases/{instance_id} — deprovision (stop + remove container, delete record)
@@ -124,3 +144,27 @@ def deprovision(
 
     db.delete(instance)
     db.commit()
+
+
+# GET /databases/{instance_id}/metrics — get database connection count & size metrics
+@router.get("/{instance_id}/metrics", response_model=DBMetricsResponse)
+def get_database_metrics(
+    instance_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    instance = db.query(DBInstance).filter(
+        DBInstance.id == instance_id,
+        DBInstance.user_id == current_user.id,
+    ).first()
+    if not instance:
+        raise HTTPException(status_code=404, detail="Database instance not found")
+
+    metrics = db_manager.get_db_metrics(
+        username=current_user.username,
+        container_id=instance.container_id,
+        db_user=instance.db_user,
+        db_name=instance.db_name,
+        db_password=instance.db_password,
+    )
+    return metrics

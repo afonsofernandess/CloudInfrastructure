@@ -8,6 +8,7 @@ class ContainerCreate(BaseModel):
     env: Optional[dict[str, str]] = {}      # environment variables
     ports: Optional[list[str]] = []         # container ports to expose, e.g. ["80/tcp", "443/tcp"]
                                             # host ports are auto-assigned by Docker to avoid conflicts
+    vm_id: Optional[int] = None             # Optional VM database ID to launch on
 
 
 class ContainerResponse(BaseModel):
@@ -17,3 +18,4 @@ class ContainerResponse(BaseModel):
     status: str
     ports: dict
     created: str
+    vm_id: Optional[int] = None             # VM ID where the container is running

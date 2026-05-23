@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Box, Plus, Play, Square, Trash2, LayoutGrid, List, RefreshCw } from 'lucide-react'
 import {
   useContainers,
@@ -7,6 +7,7 @@ import {
   useStopContainer,
   useRemoveContainer,
 } from '../hooks/useContainers'
+import { useVMs } from '../hooks/useVMs'
 import Modal from '../components/shared/Modal'
 import ConfirmDialog from '../components/shared/ConfirmDialog'
 import EmptyState from '../components/shared/EmptyState'
@@ -28,8 +29,13 @@ function formatPorts(ports) {
     .join(', ')
 }
 
-function ContainerCard({ container, onStart, onStop, onRemove }) {
+function ContainerCard({ container, onStart, onStop, onRemove, vms }) {
   const statusClass = containerStatusColor(container.status)
+  const hostingVm = vms?.find((v) => v.id === container.vm_id)
+  const vmLabel = hostingVm
+    ? `${hostingVm.name || `VM #${hostingVm.id}`} (${hostingVm.ip_address})`
+    : `VM ID: ${container.vm_id || '—'}`
+
   return (
     <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 flex flex-col gap-3">
       <div className="flex items-start justify-between">
@@ -40,6 +46,10 @@ function ContainerCard({ container, onStart, onStop, onRemove }) {
         <span className={clsx('px-2 py-0.5 text-xs font-medium rounded-full', statusClass)}>
           {container.status}
         </span>
+      </div>
+      <div className="text-xs text-slate-400">
+        <span className="font-medium text-slate-300">VM: </span>
+        <span className="text-blue-400 font-medium">{vmLabel}</span>
       </div>
       <div className="text-xs text-slate-400">
         <span className="font-medium text-slate-300">Ports: </span>
@@ -74,6 +84,7 @@ function ContainerCard({ container, onStart, onStop, onRemove }) {
 
 export default function Containers() {
   const { data: containers, isLoading } = useContainers()
+  const { data: vms } = useVMs()
   const launch = useLaunchContainer()
   const start = useStartContainer()
   const stop = useStopContainer()
@@ -87,12 +98,23 @@ export default function Containers() {
   const [name, setName] = useState('')
   const [envRows, setEnvRows] = useState([{ key: '', value: '' }])
   const [portsInput, setPortsInput] = useState('')
+  const [selectedVmId, setSelectedVmId] = useState('')
+
+  const activeVms = vms?.filter((vm) => vm.state === 'ACTIVE') || []
+
+  // Auto-select VM if there is exactly one active
+  useEffect(() => {
+    if (activeVms.length === 1 && !selectedVmId) {
+      setSelectedVmId(activeVms[0].id.toString())
+    }
+  }, [activeVms, selectedVmId])
 
   const resetForm = () => {
     setImage('')
     setName('')
     setEnvRows([{ key: '', value: '' }])
     setPortsInput('')
+    setSelectedVmId(activeVms.length === 1 ? activeVms[0].id.toString() : '')
   }
 
   const handleLaunch = (e) => {
@@ -103,7 +125,13 @@ export default function Containers() {
       ? portsInput.split(',').map((p) => p.trim()).filter(Boolean)
       : []
     launch.mutate(
-      { image, name: name || undefined, env, ports: ports.length ? ports : undefined },
+      {
+        image,
+        name: name || undefined,
+        env,
+        ports: ports.length ? ports : undefined,
+        vm_id: selectedVmId ? parseInt(selectedVmId, 10) : undefined
+      },
       {
         onSuccess: () => {
           setShowLaunchModal(false)
@@ -180,6 +208,7 @@ export default function Containers() {
             <ContainerCard
               key={c.container_id}
               container={c}
+              vms={vms}
               onStart={(id) => start.mutate(id)}
               onStop={(id) => stop.mutate(id)}
               onRemove={(id) => setConfirmRemoveId(id)}
@@ -194,6 +223,7 @@ export default function Containers() {
                 <tr className="bg-slate-800 text-slate-400 uppercase text-xs tracking-wider">
                   <th className="px-4 py-3 text-left">Name</th>
                   <th className="px-4 py-3 text-left">Image</th>
+                  <th className="px-4 py-3 text-left">Host VM</th>
                   <th className="px-4 py-3 text-left">Status</th>
                   <th className="px-4 py-3 text-left">Ports</th>
                   <th className="px-4 py-3 text-left">Created</th>
@@ -201,46 +231,53 @@ export default function Containers() {
                 </tr>
               </thead>
               <tbody>
-                {containers.map((c) => (
-                  <tr key={c.container_id} className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
-                    <td className="px-4 py-3 text-slate-100 font-medium">{c.name}</td>
-                    <td className="px-4 py-3 text-slate-400 font-mono text-xs">{c.image}</td>
-                    <td className="px-4 py-3">
-                      <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', containerStatusColor(c.status))}>
-                        {c.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-slate-400 text-xs">{formatPorts(c.ports)}</td>
-                    <td className="px-4 py-3 text-slate-400">{formatDate(c.created)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => start.mutate(c.container_id)}
-                          disabled={c.status === 'running'}
-                          className="p-1.5 rounded text-green-400 hover:bg-green-500/10 disabled:opacity-40 transition-colors"
-                          title="Start"
-                        >
-                          <Play className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => stop.mutate(c.container_id)}
-                          disabled={c.status !== 'running'}
-                          className="p-1.5 rounded text-yellow-400 hover:bg-yellow-500/10 disabled:opacity-40 transition-colors"
-                          title="Stop"
-                        >
-                          <Square className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => setConfirmRemoveId(c.container_id)}
-                          className="p-1.5 rounded text-red-400 hover:bg-red-500/10 transition-colors"
-                          title="Remove"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {containers.map((c) => {
+                  const hostingVm = vms?.find((v) => v.id === c.vm_id)
+                  const vmLabel = hostingVm
+                    ? `${hostingVm.name || `VM #${hostingVm.id}`} (${hostingVm.ip_address})`
+                    : `VM #${c.vm_id || '—'}`
+                  return (
+                    <tr key={c.container_id} className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
+                      <td className="px-4 py-3 text-slate-100 font-medium">{c.name}</td>
+                      <td className="px-4 py-3 text-slate-400 font-mono text-xs">{c.image}</td>
+                      <td className="px-4 py-3 text-blue-400 text-xs font-semibold">{vmLabel}</td>
+                      <td className="px-4 py-3">
+                        <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', containerStatusColor(c.status))}>
+                          {c.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-400 text-xs">{formatPorts(c.ports)}</td>
+                      <td className="px-4 py-3 text-slate-400">{formatDate(c.created)}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => start.mutate(c.container_id)}
+                            disabled={c.status === 'running'}
+                            className="p-1.5 rounded text-green-400 hover:bg-green-500/10 disabled:opacity-40 transition-colors"
+                            title="Start"
+                          >
+                            <Play className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => stop.mutate(c.container_id)}
+                            disabled={c.status !== 'running'}
+                            className="p-1.5 rounded text-yellow-400 hover:bg-yellow-500/10 disabled:opacity-40 transition-colors"
+                            title="Stop"
+                          >
+                            <Square className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setConfirmRemoveId(c.container_id)}
+                            className="p-1.5 rounded text-red-400 hover:bg-red-500/10 transition-colors"
+                            title="Remove"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -255,6 +292,28 @@ export default function Containers() {
         maxWidth="max-w-xl"
       >
         <form onSubmit={handleLaunch} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Target Virtual Machine <span className="text-red-400">*</span></label>
+            <select
+              value={selectedVmId}
+              onChange={(e) => setSelectedVmId(e.target.value)}
+              required
+              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+            >
+              <option value="" disabled>Select a VM...</option>
+              {activeVms.map((vm) => (
+                <option key={vm.id} value={vm.id}>
+                  {vm.name || `VM #${vm.id}`} ({vm.ip_address || 'No IP'})
+                </option>
+              ))}
+            </select>
+            {activeVms.length === 0 && (
+              <p className="text-xs text-red-400 mt-1">
+                No active VMs found. You must launch and wait for a VM to be ACTIVE before running containers.
+              </p>
+            )}
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1.5">Image <span className="text-red-400">*</span></label>
             <input

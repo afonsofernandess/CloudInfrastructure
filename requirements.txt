@@ -1,0 +1,63 @@
+# ============================================================
+# Cloud Infrastructure Project — Python Requirements
+# Install with: pip install -r requirements.txt
+# ============================================================
+
+# --- Web Framework ---
+fastapi==0.136.1          # Core async REST API framework
+uvicorn==0.46.0           # ASGI server to run FastAPI
+python-multipart==0.0.27  # Required by FastAPI to parse multipart/form-data (file uploads)
+starlette==1.0.0          # Underlying ASGI toolkit used by FastAPI (included transitively)
+websockets==16.0          # WebSocket support used by uvicorn and FastAPI
+
+# --- Database (SQLite ORM) ---
+SQLAlchemy==2.0.49        # ORM for managing the local SQLite database (cloud.db)
+
+# --- Data Validation ---
+pydantic==2.13.2          # Request/response schema validation used by FastAPI
+pydantic_core==2.46.3     # Rust-based core engine behind Pydantic v2
+annotated-types==0.7.0    # Typing support for Pydantic v2 field annotations
+email-validator==2.3.0    # Validates email fields in Pydantic schemas
+
+# --- Authentication & Security ---
+passlib==1.7.4            # Hashes and verifies user passwords
+bcrypt==4.0.1             # bcrypt hashing backend used by passlib
+python-jose==3.5.0        # Encodes/decodes JWT access tokens (login sessions)
+cryptography==47.0.0      # Cryptographic primitives; dependency of python-jose and paramiko
+
+# --- Docker (Container & Database Service) ---
+docker==7.1.0             # Docker SDK; connects to Docker via SSH to manage containers and DB instances
+
+# --- SSH (VM Connectivity) ---
+paramiko==5.0.0           # SSH client library; used by Docker SDK for SSH-based VM connections
+PyNaCl==1.6.2             # Cryptographic library required by paramiko for key exchange
+bcrypt==4.0.1             # Also needed by paramiko for SSH key encryption
+
+# --- OpenNebula (Cloud Orchestration) ---
+pyone==7.2.0              # Python bindings for the OpenNebula XML-RPC API
+lxml==6.1.0               # XML parsing; required by pyone for API responses
+xmltodict==1.0.4          # Converts OpenNebula XML responses into Python dicts
+dict2xml==1.7.8           # Converts Python dicts to XML for OpenNebula API requests
+
+# --- Object Storage (MinIO) ---
+minio==7.2.20             # MinIO S3-compatible client for the Storage service
+
+# --- HTTP Client ---
+requests==2.33.1          # HTTP client used for external API calls and test scripts
+urllib3==2.6.3             # HTTP connection pooling; used internally by requests and minio
+certifi==2026.4.22        # Mozilla CA bundle for SSL certificate verification
+charset-normalizer==3.4.7 # HTTP character encoding detection; used by requests
+idna==3.13                # Internationalized domain names; used by requests
+
+# --- Environment & Configuration ---
+python-dotenv==1.2.2      # Loads environment variables from .env file (ONE_USER, ONE_PASSWORD, etc.)
+
+# --- Async I/O ---
+anyio==4.13.0             # Async I/O compatibility layer used by FastAPI/Starlette
+sniffio==1.3.1            # Detects which async framework is running; used by anyio
+
+# --- Utilities ---
+click==8.3.3              # CLI toolkit; used internally by uvicorn
+h11==0.16.0               # HTTP/1.1 parser; used by uvicorn
+six==1.17.0               # Python 2/3 compatibility shim; used by some transitive deps
+typing_extensions==4.15.0 # Backports of new typing features for older Python versions
