@@ -56,6 +56,11 @@ def login(data: UserLogin, db: Session = Depends(get_db)):
 # GET /auth/me  (requires token)
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
+    from api.auth.opennebula_sync import get_one_user_ssh_key
+    ssh_key = None
+    if current_user.one_user_id:
+        ssh_key = get_one_user_ssh_key(current_user.one_user_id)
+    current_user.ssh_public_key = ssh_key
     return current_user
 
 
@@ -76,8 +81,19 @@ def update_me(data: UserUpdate, db: Session = Depends(get_db), current_user: Use
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"OpenNebula error: {e}")
 
+    if data.ssh_public_key is not None:
+        if current_user.one_user_id:
+            try:
+                from api.auth.opennebula_sync import update_one_user_ssh_key
+                update_one_user_ssh_key(current_user.one_user_id, data.ssh_public_key)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"OpenNebula error updating SSH key: {e}")
+
     db.commit()
     db.refresh(current_user)
+
+    from api.auth.opennebula_sync import get_one_user_ssh_key
+    current_user.ssh_public_key = get_one_user_ssh_key(current_user.one_user_id) if current_user.one_user_id else None
     return current_user
 
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { User, Lock, AlertTriangle, Eye, EyeOff, Loader2 } from 'lucide-react'
+import { User, Lock, AlertTriangle, Eye, EyeOff, Loader2, Key } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { updateMe, deleteMe } from '../api/auth'
 import useAuthStore from '../store/authStore'
@@ -38,8 +38,12 @@ export default function Settings() {
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [deleteLoading, setDeleteLoading] = useState(false)
 
+  const [sshPublicKey, setSshPublicKey] = useState(user?.ssh_public_key || '')
+  const [sshLoading, setSshLoading] = useState(false)
+
   useEffect(() => {
     if (user?.email) setEmail(user.email)
+    if (user?.ssh_public_key) setSshPublicKey(user.ssh_public_key)
   }, [user])
 
   const handleUpdateEmail = async (e) => {
@@ -53,6 +57,20 @@ export default function Settings() {
       toast.error(err.response?.data?.detail || 'Update failed', toastStyle)
     } finally {
       setEmailLoading(false)
+    }
+  }
+
+  const handleUpdateSshKey = async (e) => {
+    e.preventDefault()
+    setSshLoading(true)
+    try {
+      const updated = await updateMe({ ssh_public_key: sshPublicKey })
+      setUser(updated)
+      toast.success('SSH Public Key updated', toastStyle)
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Update failed', toastStyle)
+    } finally {
+      setSshLoading(false)
     }
   }
 
@@ -142,6 +160,33 @@ export default function Settings() {
           >
             {emailLoading && <Loader2 className="w-4 h-4 animate-spin" />}
             Save Changes
+          </button>
+        </form>
+      </SectionCard>
+
+      {/* SSH Configuration section */}
+      <SectionCard title="SSH Configuration" icon={Key}>
+        <form onSubmit={handleUpdateSshKey} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">SSH Public Key</label>
+            <textarea
+              value={sshPublicKey}
+              onChange={(e) => setSshPublicKey(e.target.value)}
+              placeholder="ssh-rsa AAAA... or ssh-ed25519 AAAA..."
+              rows={4}
+              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full font-mono text-sm"
+            />
+            <p className="text-xs text-slate-500 mt-1">
+              This SSH key is automatically injected into new VMs upon creation, allowing you to access them.
+            </p>
+          </div>
+          <button
+            type="submit"
+            disabled={sshLoading}
+            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+          >
+            {sshLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+            Save SSH Key
           </button>
         </form>
       </SectionCard>

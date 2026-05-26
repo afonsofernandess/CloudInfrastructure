@@ -17,6 +17,7 @@ class UserLogin(BaseModel):
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     password: Optional[str] = None
+    ssh_public_key: Optional[str] = None
 
 
 class UserResponse(BaseModel):
@@ -26,6 +27,7 @@ class UserResponse(BaseModel):
     is_active: bool
     is_admin: bool
     one_user_id: Optional[int]
+    ssh_public_key: Optional[str] = None
     created_at: datetime
 
     class Config:
