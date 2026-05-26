@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Box, Plus, Play, Square, Trash2, LayoutGrid, List, RefreshCw } from 'lucide-react'
 import {
   useContainers,
@@ -93,6 +94,86 @@ export default function Containers() {
   const [viewMode, setViewMode] = useState('grid')
   const [showLaunchModal, setShowLaunchModal] = useState(false)
   const [confirmRemoveId, setConfirmRemoveId] = useState(null)
+  const queryClient = useQueryClient()
+
+  // Time-based stepper: track when launch started and auto-advance stages
+  const launchStartRef = useRef(null)
+  const [elapsedSecs, setElapsedSecs] = useState(0)
+
+  useEffect(() => {
+    if (launch.isPending) {
+      if (!launchStartRef.current) {
+        launchStartRef.current = Date.now()
+        setElapsedSecs(0)
+      }
+      const iv = setInterval(() => {
+        setElapsedSecs(Math.floor((Date.now() - launchStartRef.current) / 1000))
+        queryClient.invalidateQueries({ queryKey: ['vms'] })
+      }, 1000)
+      return () => clearInterval(iv)
+    } else {
+      launchStartRef.current = null
+      setElapsedSecs(0)
+    }
+  }, [launch.isPending, queryClient])
+
+  const getLaunchProgress = () => {
+    const hasActiveVM = vms?.some(v => v.state === 'ACTIVE')
+    const hasSuspendedVM = vms?.some(v => ['SUSPENDED', 'POWEROFF', 'STOPPED'].includes(v.state))
+
+    // Determine which scenario we're in based on selected VM
+    let scenario = 'new'  // provisioning from scratch
+    if (selectedVmId) {
+      const target = vms?.find(v => v.id === parseInt(selectedVmId, 10))
+      if (target?.state === 'ACTIVE') scenario = 'active'
+      else if (['SUSPENDED', 'POWEROFF', 'STOPPED'].includes(target?.state)) scenario = 'sleeping'
+    } else if (hasActiveVM) {
+      scenario = 'active'
+    } else if (hasSuspendedVM) {
+      scenario = 'sleeping'
+    }
+
+    // Time thresholds for stage transitions (seconds)
+    // active:   0s→connecting,  10s→deploying
+    // sleeping: 0s→waking,      20s→connecting,  35s→deploying
+    // new:      0s→booting,     35s→docker,       50s→deploying
+    let stages, step, message
+
+    if (scenario === 'active') {
+      const s1 = elapsedSecs < 10
+      const s2 = elapsedSecs >= 10 && elapsedSecs < 20
+      const s3 = elapsedSecs >= 20
+      stages = [
+        { name: 'Verifying VM is running', status: s1 ? 'current' : 'complete' },
+        { name: 'Connecting to Docker daemon', status: s1 ? 'upcoming' : s2 ? 'current' : 'complete' },
+        { name: 'Pulling image & deploying container', status: s3 ? 'current' : 'upcoming' },
+      ]
+      message = s1 ? 'Verifying VM status...' : s2 ? 'Connecting to Docker daemon...' : 'Pulling image & launching container...'
+    } else if (scenario === 'sleeping') {
+      const s1 = elapsedSecs < 20
+      const s2 = elapsedSecs >= 20 && elapsedSecs < 35
+      const s3 = elapsedSecs >= 35
+      stages = [
+        { name: 'Waking up sleeping VM (~20s)', status: s1 ? 'current' : 'complete' },
+        { name: 'Connecting to Docker daemon', status: s1 ? 'upcoming' : s2 ? 'current' : 'complete' },
+        { name: 'Pulling image & deploying container', status: s3 ? 'current' : 'upcoming' },
+      ]
+      message = s1 ? `Resuming VM... (${elapsedSecs}s)` : s2 ? 'Connecting to Docker...' : 'Pulling image & starting container...'
+    } else {
+      // new VM provisioning
+      const s1 = elapsedSecs < 35
+      const s2 = elapsedSecs >= 35 && elapsedSecs < 55
+      const s3 = elapsedSecs >= 55
+      stages = [
+        { name: 'Allocating & booting new VM (~35s)', status: s1 ? 'current' : 'complete' },
+        { name: 'Installing Docker & verifying socket', status: s1 ? 'upcoming' : s2 ? 'current' : 'complete' },
+        { name: 'Pulling image & deploying container', status: s3 ? 'current' : 'upcoming' },
+      ]
+      message = s1 ? `Provisioning VM from scratch... (${elapsedSecs}s)` : s2 ? 'Installing Docker on new VM...' : 'Pulling image & launching container...'
+    }
+
+    return { stages, message }
+  }
 
   const [image, setImage] = useState('')
   const [name, setName] = useState('')
@@ -287,78 +368,139 @@ export default function Containers() {
       {/* Launch Modal */}
       <Modal
         isOpen={showLaunchModal}
-        onClose={() => { setShowLaunchModal(false); resetForm() }}
-        title="Launch Container"
-        maxWidth="max-w-xl"
+        onClose={() => { if (!launch.isPending) { setShowLaunchModal(false); resetForm() } }}
+        title={launch.isPending ? "Deploying Container..." : "Launch Container"}
+        maxWidth={launch.isPending ? "max-w-md" : "max-w-xl"}
       >
-        <form onSubmit={handleLaunch} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">Target Virtual Machine</label>
-            <select
-              value={selectedVmId}
-              onChange={(e) => setSelectedVmId(e.target.value)}
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
-            >
-              <option value="">Auto-select / Provision VM (Recommended)</option>
-              {activeVms.map((vm) => {
-                const stateLabel = vm.state === 'SUSPENDED' ? 'Sleeping' : vm.state;
-                const ipLabel = vm.ip_address && vm.ip_address !== '—' ? vm.ip_address : 'No IP';
-                return (
-                  <option key={vm.id} value={vm.id}>
-                    {vm.name || `VM #${vm.id}`} ({ipLabel} - {stateLabel})
-                  </option>
-                );
-              })}
-            </select>
-            {activeVms.length === 0 && (
-              <p className="text-xs text-blue-400 mt-1.5 flex items-center gap-1">
-                <span>ℹ️</span> No active VMs found. The platform will automatically wake up or provision a VM for you in the background!
-              </p>
-            )}
-          </div>
+        {launch.isPending ? (
+          <div className="py-6 px-4 flex flex-col items-center justify-center text-center">
+            {/* Animated Spinner Icon */}
+            <div className="relative flex items-center justify-center mb-6">
+              <div className="w-16 h-16 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
+              <Box className="w-6 h-6 text-blue-400 absolute animate-pulse" />
+            </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">Image <span className="text-red-400">*</span></label>
-            <input
-              type="text"
-              value={image}
-              onChange={(e) => setImage(e.target.value)}
-              required
-              placeholder="nginx:latest"
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
-            />
-            <div className="flex flex-wrap gap-2 mt-2">
-              {QUICK_IMAGES.map((img) => (
-                <button
-                  key={img}
-                  type="button"
-                  onClick={() => setImage(img)}
-                  className="px-2 py-1 text-xs rounded bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors font-mono"
-                >
-                  {img}
-                </button>
+            <h3 className="text-lg font-semibold text-slate-100 mb-2 font-outfit">Deploying Container</h3>
+            <p className="text-xs text-slate-400 max-w-sm mb-6 leading-relaxed">
+              {getLaunchProgress().message}
+            </p>
+
+            {/* Stepper */}
+            <div className="w-full text-left space-y-4 bg-slate-900/60 border border-slate-800/80 rounded-xl p-4">
+              {getLaunchProgress().stages.map((stage, idx) => (
+                <div key={idx} className="flex items-center gap-3">
+                  <div className="flex items-center justify-center">
+                    {stage.status === 'complete' ? (
+                      <div className="w-5 h-5 rounded-full bg-green-500/20 border border-green-500 flex items-center justify-center text-[10px] text-green-400 font-bold">
+                        ✓
+                      </div>
+                    ) : stage.status === 'current' ? (
+                      <div className="w-5 h-5 rounded-full bg-blue-500/20 border border-blue-500 flex items-center justify-center">
+                        <div className="w-2 h-2 rounded-full bg-blue-400 animate-ping"></div>
+                      </div>
+                    ) : (
+                      <div className="w-5 h-5 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-[10px] text-slate-500">
+                        {idx + 1}
+                      </div>
+                    )}
+                  </div>
+                  <span className={clsx(
+                    'text-xs font-medium',
+                    stage.status === 'complete' ? 'text-slate-300 line-through opacity-60' :
+                    stage.status === 'current' ? 'text-blue-400 font-semibold' : 'text-slate-500'
+                  )}>
+                    {stage.name}
+                  </span>
+                </div>
               ))}
             </div>
-          </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">Name <span className="text-slate-500">(optional)</span></label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="my-container"
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
-            />
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="block text-sm font-medium text-slate-300">Environment Variables</label>
-              <button type="button" onClick={addEnvRow} className="text-xs text-blue-400 hover:text-blue-300 transition-colors">
-                + Add row
-              </button>
+            <div className="mt-6 flex items-center gap-2 text-[10px] text-blue-400 bg-blue-500/5 border border-blue-500/10 px-3 py-1.5 rounded-lg">
+              <span>ℹ️</span> 
+              <span>First-time setup takes ~45s to configure the VM. Subsequent runs are near-instant!</span>
             </div>
+          </div>
+        ) : (
+          <form onSubmit={handleLaunch} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Target Virtual Machine</label>
+              <select
+                value={selectedVmId}
+                onChange={(e) => setSelectedVmId(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+              >
+                <option value="">Auto-select / Provision VM (Recommended)</option>
+                {activeVms.map((vm) => {
+                  const stateLabel = vm.state === 'SUSPENDED' ? 'Sleeping' : vm.state;
+                  const ipLabel = vm.ip_address && vm.ip_address !== '—' ? vm.ip_address : 'No IP';
+                  return (
+                    <option key={vm.id} value={vm.id}>
+                      {vm.name || `VM #${vm.id}`} ({ipLabel} - {stateLabel})
+                    </option>
+                  );
+                })}
+              </select>
+              {selectedVmId ? (() => {
+                const target = vms?.find(v => v.id === parseInt(selectedVmId, 10));
+                if (target && (target.state === 'SUSPENDED' || target.state === 'POWEROFF' || target.state === 'STOPPED')) {
+                  return (
+                    <div className="mt-2 text-xs text-purple-400 bg-purple-500/5 border border-purple-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
+                      <span className="mt-0.5">🌙</span>
+                      <span>This VM is sleeping. Launching the container will automatically wake it up (~30s).</span>
+                    </div>
+                  );
+                }
+                return null;
+              })() : (
+                <div className="mt-2 text-xs text-blue-400 bg-blue-500/5 border border-blue-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
+                  <span className="mt-0.5">💡</span>
+                  <span>If no running VM is found, a new VM will be automatically provisioned and configured (~45s).</span>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Image <span className="text-red-400">*</span></label>
+              <input
+                type="text"
+                value={image}
+                onChange={(e) => setImage(e.target.value)}
+                required
+                placeholder="nginx:latest"
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+              />
+              <div className="flex flex-wrap gap-2 mt-2">
+                {QUICK_IMAGES.map((img) => (
+                  <button
+                    key={img}
+                    type="button"
+                    onClick={() => setImage(img)}
+                    className="px-2 py-1 text-xs rounded bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors font-mono"
+                  >
+                    {img}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Name <span className="text-slate-500">(optional)</span></label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="my-container"
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1.5 font-outfit">
+                <label className="block text-sm font-medium text-slate-300">Environment Variables</label>
+                <button type="button" onClick={addEnvRow} className="text-xs text-blue-400 hover:text-blue-300 transition-colors">
+                  + Add row
+                </button>
+              </div>
             <div className="space-y-2">
               {envRows.map((row, i) => (
                 <div key={i} className="flex gap-2">
@@ -418,7 +560,8 @@ export default function Containers() {
             </button>
           </div>
         </form>
-      </Modal>
+      )}
+    </Modal>
 
       <ConfirmDialog
         isOpen={confirmRemoveId != null}

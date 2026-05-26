@@ -23,3 +23,8 @@ export async function getClusterStatus() {
   const res = await client.get('/compute/status')
   return res.data
 }
+
+export async function prewarmVM() {
+  const res = await client.post('/compute/prewarm')
+  return res.data
+}

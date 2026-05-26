@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { listVMs, createVM, getVM, destroyVM } from '../api/compute'
+import { listVMs, createVM, getVM, destroyVM, prewarmVM } from '../api/compute'
 
 export function useVMs() {
   return useQuery({
@@ -52,5 +52,11 @@ export function useDestroyVM() {
         style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' },
       })
     },
+  })
+}
+
+export function usePrewarmVM() {
+  return useMutation({
+    mutationFn: prewarmVM,
   })
 }
