@@ -113,6 +113,19 @@ def destroy_vm(one_vm_id: int) -> None:
     client.vm.action("terminate-hard", one_vm_id)
 
 
+def suspend_vm(one_vm_id: int) -> None:
+    """Suspend a VM to save resources."""
+    client = get_client()
+    client.vm.action("suspend", one_vm_id)
+
+
+def resume_vm(one_vm_id: int) -> None:
+    """Resume a suspended or powered-off VM."""
+    client = get_client()
+    client.vm.action("resume", one_vm_id)
+
+
+
 def get_vm(one_vm_id: int) -> dict:
     """Return a dict with the VM's current info and monitoring data."""
     client = get_client()
