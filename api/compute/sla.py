@@ -10,10 +10,12 @@ Rules:
 - The autoscaler checks every CHECK_INTERVAL_SEC seconds.
 """
 
-MIN_VMS = 1                  # minimum VMs always kept alive
+MIN_VMS = 0                  # minimum VMs always kept alive (0 allows scale-to-zero)
 MAX_VMS = 5                  # hard ceiling
 SCALE_UP_CPU_PCT = 70.0     # scale up when avg CPU > 70%
 SCALE_DOWN_CPU_PCT = 20.0    # scale down when avg CPU < 20%
 SCALE_DOWN_WINDOW_SEC = 120  # VM must be idle for 2 min before teardown
 CHECK_INTERVAL_SEC = 30      # autoscaler loop interval
+USER_INACTIVITY_TIMEOUT_SEC = 600  # suspend user VMs after 10 minutes of inactivity
 DEFAULT_TEMPLATE_ID = 0      # Alpine Linux 3.20
+

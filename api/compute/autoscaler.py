@@ -82,8 +82,39 @@ class AutoScaler:
         finally:
             db.close()
 
-        # Scale UP
+        # Check for inactive users and suspend their VMs
         now = datetime.now(timezone.utc)
+        db = SessionLocal()
+        try:
+            from api.auth.models import User
+            from opennebula.vm_manager import suspend_vm
+            
+            users = db.query(User).all()
+            for user in users:
+                if user.one_user_id is not None and user.last_active_at:
+                    last_active = user.last_active_at
+                    if last_active.tzinfo is None:
+                        last_active = last_active.replace(tzinfo=timezone.utc)
+                    
+                    inactive_duration = (now - last_active).total_seconds()
+                    if inactive_duration >= sla.USER_INACTIVITY_TIMEOUT_SEC:
+                        # User is inactive! Check if they have active user VMs (not autoscale VMs)
+                        user_vms = [
+                            vm for vm in all_vms
+                            if vm["one_owner_id"] == user.one_user_id 
+                            and vm["state"] == "ACTIVE"
+                            and not vm["name"].startswith(AUTOSCALE_PREFIX)
+                        ]
+                        for vm in user_vms:
+                            log.info("Suspending VM '%s' (one_vm_id=%d) due to user '%s' inactivity (idle for %.1fs)", 
+                                     vm["name"], vm["one_vm_id"], user.username, inactive_duration)
+                            suspend_vm(vm["one_vm_id"])
+        except Exception as e:
+            log.error("Failed to suspend inactive user VMs: %s", e)
+        finally:
+            db.close()
+
+        # Scale UP
         if avg_cpu > sla.SCALE_UP_CPU_PCT and total < sla.MAX_VMS:
             # Cooldown check: Wait at least 2 minutes between scale-ups
             if (now - self._last_scale_up).total_seconds() < 120:
