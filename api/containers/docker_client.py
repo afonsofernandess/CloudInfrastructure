@@ -96,6 +96,89 @@ def container_label(username: str) -> dict:
     return {LABEL_KEY: username}
 
 
+def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> int:
+    """
+    Ensure the user has an active and fully booted VM.
+    If a VM is suspended/powered-off, it resumes it.
+    If no VM exists, it provisions a new one.
+    Blocks (with timeout) until LCM_STATE is RUNNING (3) and returns the VMInstance.id.
+    """
+    import time
+    from api.database import SessionLocal
+    from api.auth.models import User
+    from api.compute.models import VMInstance
+    from opennebula.vm_manager import get_vm, resume_vm, create_vm
+    from api.compute import sla
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise RuntimeError(f"User '{username}' not found in database")
+
+        target_inst = None
+        if vm_id is not None:
+            # Check the specific VM requested
+            target_inst = db.query(VMInstance).filter(
+                VMInstance.id == vm_id,
+                VMInstance.user_id == user.id,
+                VMInstance.terminated_at == None
+            ).first()
+            if not target_inst:
+                raise RuntimeError(f"VM ID {vm_id} not found or already terminated.")
+        else:
+            # Find any non-terminated VM
+            target_inst = db.query(VMInstance).filter(
+                VMInstance.user_id == user.id,
+                VMInstance.terminated_at == None
+            ).first()
+
+        # If no VM exists, auto-provision one
+        if not target_inst:
+            vm_name = f"auto-vm-{username}-{int(time.time())}"
+            print(f"DEBUG: No active VM found for '{username}'. Auto-provisioning VM '{vm_name}'...")
+            one_vm_id = create_vm(
+                name=vm_name,
+                template_id=sla.DEFAULT_TEMPLATE_ID,
+                user_id=user.one_user_id,
+            )
+            target_inst = VMInstance(
+                user_id=user.id,
+                one_vm_id=one_vm_id,
+                name=vm_name,
+                template_id=sla.DEFAULT_TEMPLATE_ID,
+            )
+            db.add(target_inst)
+            db.commit()
+            db.refresh(target_inst)
+            print(f"DEBUG: VM '{vm_name}' created in OpenNebula with one_vm_id={one_vm_id}")
+
+        # Check the VM state in OpenNebula
+        one_vm_id = target_inst.one_vm_id
+        live = get_vm(one_vm_id)
+
+        # If suspended or powered off, resume it
+        if live["state"] in ("SUSPENDED", "POWEROFF", "STOPPED"):
+            print(f"DEBUG: VM '{target_inst.name}' is {live['state']}. Resuming...")
+            resume_vm(one_vm_id)
+
+        # Wait for the VM to be ACTIVE and LCM_STATE = 3 (RUNNING)
+        max_attempts = 45  # wait up to 90 seconds (45 * 2s)
+        for attempt in range(max_attempts):
+            live = get_vm(one_vm_id)
+            if live["state"] == "ACTIVE" and live["lcm_state"] == 3:
+                ip = live.get("ip_address")
+                if ip and ip != "—":
+                    print(f"DEBUG: VM '{target_inst.name}' is fully RUNNING with IP {ip}.")
+                    return target_inst.id
+            print(f"DEBUG: Waiting for VM '{target_inst.name}' to boot... State={live['state']}, LCM={live['lcm_state']} (attempt {attempt+1}/{max_attempts})")
+            time.sleep(2)
+
+        raise RuntimeError(f"Timed out waiting for VM '{target_inst.name}' to start.")
+    finally:
+        db.close()
+
+
 def launch_container(
     username: str,
     image: str,
@@ -107,7 +190,8 @@ def launch_container(
     """
     Pull image if needed and run a container for the user.
     """
-    client = get_client(username, vm_id)
+    resolved_vm_id = ensure_user_has_running_vm(username, vm_id)
+    client = get_client(username, resolved_vm_id)
     full_name = f"{username}-{name}"
 
     # Pre-flight: remove any leftover container with this name that is not running
@@ -147,18 +231,7 @@ def launch_container(
 
     container.reload()
     res = _container_to_dict(container)
-    if vm_id is not None:
-        res["vm_id"] = vm_id
-    else:
-        # Resolve which vm_id we used
-        clients = get_all_clients(username)
-        for vid, cli in clients:
-            try:
-                cli.containers.get(full_name)
-                res["vm_id"] = vid
-                break
-            except Exception:
-                continue
+    res["vm_id"] = resolved_vm_id
     return res
 
 

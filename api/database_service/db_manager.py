@@ -89,7 +89,10 @@ def provision_db(username: str, instance_name: str, db_name: str, vm_id: Optiona
     Launch a PostgreSQL container for the user.
     Returns a dict with container_id, host_port, db_name, db_user, db_password, vm_id.
     """
-    client = _get_client(username, vm_id)
+    from api.containers.docker_client import ensure_user_has_running_vm
+    resolved_vm_id = ensure_user_has_running_vm(username, vm_id)
+
+    client = _get_client(username, resolved_vm_id)
     _ensure_image(client)
 
     db_user = username
@@ -133,18 +136,6 @@ def provision_db(username: str, instance_name: str, db_name: str, vm_id: Optiona
 
     # Wait up to 15 s for PostgreSQL to bind the port (it writes to logs when ready)
     host_port = _wait_for_port(container, timeout=15)
-
-    resolved_vm_id = vm_id
-    if resolved_vm_id is None:
-        from api.containers.docker_client import get_all_clients
-        clients = get_all_clients(username)
-        for vid, cli in clients:
-            try:
-                cli.containers.get(container.id)
-                resolved_vm_id = vid
-                break
-            except Exception:
-                continue
 
     return {
         "container_id": container.id,

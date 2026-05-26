@@ -109,8 +109,19 @@ class AutoScaler:
                             log.info("Suspending VM '%s' (one_vm_id=%d) due to user '%s' inactivity (idle for %.1fs)", 
                                      vm["name"], vm["one_vm_id"], user.username, inactive_duration)
                             suspend_vm(vm["one_vm_id"])
+                    else:
+                        # User is active! Check if they have suspended user VMs that should be resumed
+                        suspended_vms = [
+                            vm for vm in all_vms
+                            if vm["one_owner_id"] == user.one_user_id
+                            and vm["state"] in ("SUSPENDED", "POWEROFF")
+                        ]
+                        for vm in suspended_vms:
+                            log.info("Resuming VM '%s' (one_vm_id=%d) because user '%s' is active",
+                                     vm["name"], vm["one_vm_id"], user.username)
+                            resume_vm(vm["one_vm_id"])
         except Exception as e:
-            log.error("Failed to suspend inactive user VMs: %s", e)
+            log.error("Failed to manage user VMs state: %s", e)
         finally:
             db.close()
 
