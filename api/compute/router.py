@@ -1,5 +1,5 @@
 import pyone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
@@ -275,3 +275,22 @@ def get_energy_stats(
         "energy_saved_kwh": round(KWH_SAVED, 2),
         "co2_saved_kg": round(KWH_SAVED * CO2_PER_KWH, 2)
     }
+
+
+# POST /compute/prewarm — pre-warm / ensure VM is booted in the background
+@router.post("/prewarm", status_code=status.HTTP_202_ACCEPTED)
+def prewarm_vm(
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+):
+    from api.containers.docker_client import ensure_user_has_running_vm
+    
+    def do_prewarm():
+        try:
+            ensure_user_has_running_vm(current_user.username)
+        except Exception as e:
+            # Asynchronous log warning
+            print(f"Background pre-warm error for user '{current_user.username}': {e}")
+
+    background_tasks.add_task(do_prewarm)
+    return {"message": "Pre-warming initiated in the background"}

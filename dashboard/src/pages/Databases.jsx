@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Database, Plus, Key, Trash2, Eye, EyeOff, Copy, Check, Activity } from 'lucide-react'
 import { useDatabases, useProvisionDB, useDeprovisionDB } from '../hooks/useDatabases'
 import { useVMs } from '../hooks/useVMs'
@@ -237,8 +238,83 @@ export default function Databases() {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [form, setForm] = useState({ name: '', db_name: '' })
   const [selectedVmId, setSelectedVmId] = useState('')
+  const queryClient = useQueryClient()
 
-  const activeVms = vms?.filter((vm) => vm.state === 'ACTIVE') || []
+  // Time-based stepper: track when provision started and auto-advance stages
+  const provisionStartRef = useRef(null)
+  const [elapsedSecs, setElapsedSecs] = useState(0)
+
+  useEffect(() => {
+    if (provision.isPending) {
+      if (!provisionStartRef.current) {
+        provisionStartRef.current = Date.now()
+        setElapsedSecs(0)
+      }
+      const iv = setInterval(() => {
+        setElapsedSecs(Math.floor((Date.now() - provisionStartRef.current) / 1000))
+        queryClient.invalidateQueries({ queryKey: ['vms'] })
+      }, 1000)
+      return () => clearInterval(iv)
+    } else {
+      provisionStartRef.current = null
+      setElapsedSecs(0)
+    }
+  }, [provision.isPending, queryClient])
+
+  const getProvisionProgress = () => {
+    const hasActiveVM = vms?.some(v => v.state === 'ACTIVE')
+    const hasSuspendedVM = vms?.some(v => ['SUSPENDED', 'POWEROFF', 'STOPPED'].includes(v.state))
+
+    let scenario = 'new'
+    if (selectedVmId) {
+      const target = vms?.find(v => v.id === parseInt(selectedVmId, 10))
+      if (target?.state === 'ACTIVE') scenario = 'active'
+      else if (['SUSPENDED', 'POWEROFF', 'STOPPED'].includes(target?.state)) scenario = 'sleeping'
+    } else if (hasActiveVM) {
+      scenario = 'active'
+    } else if (hasSuspendedVM) {
+      scenario = 'sleeping'
+    }
+
+    let stages, message
+
+    if (scenario === 'active') {
+      const s1 = elapsedSecs < 10
+      const s2 = elapsedSecs >= 10 && elapsedSecs < 25
+      const s3 = elapsedSecs >= 25
+      stages = [
+        { name: 'Verifying VM is running', status: s1 ? 'current' : 'complete' },
+        { name: 'Connecting to Docker daemon', status: s1 ? 'upcoming' : s2 ? 'current' : 'complete' },
+        { name: 'Deploying PostgreSQL instance', status: s3 ? 'current' : 'upcoming' },
+      ]
+      message = s1 ? 'Verifying VM status...' : s2 ? 'Connecting to Docker daemon...' : 'Deploying PostgreSQL database...'
+    } else if (scenario === 'sleeping') {
+      const s1 = elapsedSecs < 20
+      const s2 = elapsedSecs >= 20 && elapsedSecs < 35
+      const s3 = elapsedSecs >= 35
+      stages = [
+        { name: 'Waking up sleeping VM (~20s)', status: s1 ? 'current' : 'complete' },
+        { name: 'Connecting to Docker daemon', status: s1 ? 'upcoming' : s2 ? 'current' : 'complete' },
+        { name: 'Deploying PostgreSQL instance', status: s3 ? 'current' : 'upcoming' },
+      ]
+      message = s1 ? `Resuming VM... (${elapsedSecs}s)` : s2 ? 'Connecting to Docker...' : 'Deploying PostgreSQL database...'
+    } else {
+      const s1 = elapsedSecs < 35
+      const s2 = elapsedSecs >= 35 && elapsedSecs < 55
+      const s3 = elapsedSecs >= 55
+      stages = [
+        { name: 'Allocating & booting new VM (~35s)', status: s1 ? 'current' : 'complete' },
+        { name: 'Installing Docker & verifying socket', status: s1 ? 'upcoming' : s2 ? 'current' : 'complete' },
+        { name: 'Deploying PostgreSQL instance', status: s3 ? 'current' : 'upcoming' },
+      ]
+      message = s1 ? `Provisioning VM from scratch... (${elapsedSecs}s)` : s2 ? 'Installing Docker on new VM...' : 'Deploying PostgreSQL database...'
+    }
+
+    return { stages, message }
+  }
+
+
+  const activeVms = vms?.filter((vm) => ['ACTIVE', 'SUSPENDED', 'POWEROFF', 'STOPPED', 'PENDING'].includes(vm.state)) || []
 
   // Auto-select VM if there is exactly one active
   useEffect(() => {
@@ -363,73 +439,141 @@ export default function Databases() {
       <Modal
         isOpen={showProvisionModal}
         onClose={() => {
-          setShowProvisionModal(false)
-          setForm({ name: '', db_name: '' })
-          setSelectedVmId(activeVms.length === 1 ? activeVms[0].id.toString() : '')
+          if (!provision.isPending) {
+            setShowProvisionModal(false)
+            setForm({ name: '', db_name: '' })
+            setSelectedVmId(activeVms.length === 1 ? activeVms[0].id.toString() : '')
+          }
         }}
-        title="Provision Database"
+        title={provision.isPending ? "Provisioning Database..." : "Provision Database"}
+        maxWidth={provision.isPending ? "max-w-md" : "max-w-xl"}
       >
-        <form onSubmit={handleProvision} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">Target Virtual Machine <span className="text-red-400">*</span></label>
-            <select
-              value={selectedVmId}
-              onChange={(e) => setSelectedVmId(e.target.value)}
-              required
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
-            >
-              <option value="" disabled>Select a VM...</option>
-              {activeVms.map((vm) => (
-                <option key={vm.id} value={vm.id}>
-                  {vm.name || `VM #${vm.id}`} ({vm.ip_address || 'No IP'})
-                </option>
-              ))}
-            </select>
-            {activeVms.length === 0 && (
-              <p className="text-xs text-red-400 mt-1">
-                No active VMs found. You must launch and wait for a VM to be ACTIVE before provisioning databases.
-              </p>
-            )}
-          </div>
+        {provision.isPending ? (
+          <div className="py-6 px-4 flex flex-col items-center justify-center text-center">
+            {/* Animated Spinner Icon */}
+            <div className="relative flex items-center justify-center mb-6">
+              <div className="w-16 h-16 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
+              <Database className="w-6 h-6 text-blue-400 absolute animate-pulse" />
+            </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">Instance Name <span className="text-red-400">*</span></label>
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              required
-              placeholder="my-database"
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
-            />
+            <h3 className="text-lg font-semibold text-slate-100 mb-2 font-outfit">Provisioning Database</h3>
+            <p className="text-xs text-slate-400 max-w-sm mb-6 leading-relaxed">
+              {getProvisionProgress().message}
+            </p>
+
+            {/* Stepper */}
+            <div className="w-full text-left space-y-4 bg-slate-900/60 border border-slate-800/80 rounded-xl p-4">
+              {getProvisionProgress().stages.map((stage, idx) => (
+                <div key={idx} className="flex items-center gap-3">
+                  <div className="flex items-center justify-center">
+                    {stage.status === 'complete' ? (
+                      <div className="w-5 h-5 rounded-full bg-green-500/20 border border-green-500 flex items-center justify-center text-[10px] text-green-400 font-bold">
+                        ✓
+                      </div>
+                    ) : stage.status === 'current' ? (
+                      <div className="w-5 h-5 rounded-full bg-blue-500/20 border border-blue-500 flex items-center justify-center">
+                        <div className="w-2 h-2 rounded-full bg-blue-400 animate-ping"></div>
+                      </div>
+                    ) : (
+                      <div className="w-5 h-5 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-[10px] text-slate-500">
+                        {idx + 1}
+                      </div>
+                    )}
+                  </div>
+                  <span className={clsx(
+                    'text-xs font-medium',
+                    stage.status === 'complete' ? 'text-slate-300 line-through opacity-60' :
+                    stage.status === 'current' ? 'text-blue-400 font-semibold' : 'text-slate-500'
+                  )}>
+                    {stage.name}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-6 flex items-center gap-2 text-[10px] text-blue-400 bg-blue-500/5 border border-blue-500/10 px-3 py-1.5 rounded-lg">
+              <span>ℹ️</span> 
+              <span>First-time setup takes ~45s to configure the VM. Subsequent runs are near-instant!</span>
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">DB Name <span className="text-slate-500">(optional)</span></label>
-            <input
-              type="text"
-              value={form.db_name}
-              onChange={(e) => setForm({ ...form, db_name: e.target.value })}
-              placeholder="Defaults to your username"
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full placeholder-slate-500"
-            />
-          </div>
-          <div className="flex gap-3 pt-2">
-            <button
-              type="button"
-              onClick={() => { setShowProvisionModal(false); setForm({ name: '', db_name: '' }) }}
-              className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={provision.isPending}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium transition-colors"
-            >
-              {provision.isPending ? 'Provisioning…' : 'Provision'}
-            </button>
-          </div>
-        </form>
+        ) : (
+          <form onSubmit={handleProvision} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Target Virtual Machine</label>
+              <select
+                value={selectedVmId}
+                onChange={(e) => setSelectedVmId(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+              >
+                <option value="">Auto-select / Provision VM (Recommended)</option>
+                {activeVms.map((vm) => {
+                  const stateLabel = vm.state === 'SUSPENDED' ? 'Sleeping' : vm.state;
+                  const ipLabel = vm.ip_address && vm.ip_address !== '—' ? vm.ip_address : 'No IP';
+                  return (
+                    <option key={vm.id} value={vm.id}>
+                      {vm.name || `VM #${vm.id}`} ({ipLabel} - {stateLabel})
+                    </option>
+                  );
+                })}
+              </select>
+              {selectedVmId ? (() => {
+                const target = vms?.find(v => v.id === parseInt(selectedVmId, 10));
+                if (target && (target.state === 'SUSPENDED' || target.state === 'POWEROFF' || target.state === 'STOPPED')) {
+                  return (
+                    <div className="mt-2 text-xs text-purple-400 bg-purple-500/5 border border-purple-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
+                      <span className="mt-0.5">🌙</span>
+                      <span>This VM is sleeping. Provisioning the database will automatically wake it up (~30s).</span>
+                    </div>
+                  );
+                }
+                return null;
+              })() : (
+                <div className="mt-2 text-xs text-blue-400 bg-blue-500/5 border border-blue-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
+                  <span className="mt-0.5">💡</span>
+                  <span>If no running VM is found, a new VM will be automatically provisioned and configured (~45s).</span>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Instance Name <span className="text-red-400">*</span></label>
+              <input
+                type="text"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                required
+                placeholder="my-database"
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">DB Name <span className="text-slate-500">(optional)</span></label>
+              <input
+                type="text"
+                value={form.db_name}
+                onChange={(e) => setForm({ ...form, db_name: e.target.value })}
+                placeholder="Defaults to your username"
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full placeholder-slate-500"
+              />
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => { setShowProvisionModal(false); setForm({ name: '', db_name: '' }) }}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={provision.isPending}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+              >
+                {provision.isPending ? 'Provisioning…' : 'Provision'}
+              </button>
+            </div>
+          </form>
+        )}
       </Modal>
 
       {/* Credentials Modal */}

@@ -1,4 +1,6 @@
 import { Outlet, useLocation } from 'react-router-dom'
+import { useEffect } from 'react'
+import { usePrewarmVM } from '../hooks/useVMs'
 import Sidebar from '../components/shared/Sidebar'
 import Topbar from '../components/shared/Topbar'
 
@@ -14,6 +16,12 @@ const TITLE_MAP = {
 export default function DashboardLayout() {
   const location = useLocation()
   const title = TITLE_MAP[location.pathname] || 'Dashboard'
+  const prewarm = usePrewarmVM()
+
+  useEffect(() => {
+    // Silently initiate VM boot/resume in the background
+    prewarm.mutate()
+  }, [])
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-950">

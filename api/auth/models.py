@@ -21,3 +21,5 @@ class User(Base):
     one_user_id = Column(Integer, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_active_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+

@@ -25,8 +25,10 @@ export function vmStateColor(state) {
   if (s === 'ACTIVE' || s === 'RUNNING') return 'bg-green-500/20 text-green-400'
   if (s === 'POWEROFF' || s === 'STOPPED') return 'bg-yellow-500/20 text-yellow-400'
   if (s === 'FAILED' || s === 'ERROR') return 'bg-red-500/20 text-red-400'
+  if (s === 'SUSPENDED') return 'bg-purple-500/20 text-purple-400'
   return 'bg-slate-500/20 text-slate-400'
 }
+
 
 export function containerStatusColor(status) {
   if (!status) return 'bg-slate-500/20 text-slate-400'

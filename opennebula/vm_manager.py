@@ -73,19 +73,31 @@ def create_vm(
 
     docker_setup = (
         'echo "nameserver 8.8.8.8" > /etc/resolv.conf\n'
-        'apk update\n'
-        'apk add docker\n'
-        'rc-update add docker boot\n'
-        'service docker start\n'
+        '# Wait up to 30 seconds for internet connectivity\n'
+        'i=0\n'
+        'while [ $i -lt 30 ]; do\n'
+        '  if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then\n'
+        '    break\n'
+        '  fi\n'
+        '  sleep 1\n'
+        '  i=$((i+1))\n'
+        'done\n'
+        '# Install docker with retries\n'
+        'for r in 1 2 3; do\n'
+        '  apk update && apk add docker && break\n'
+        '  sleep 5\n'
+        'done\n'
+        'rc-update add docker default\n'
+        '(sleep 10 && service docker start) &\n'
     )
     if user_data:
         full_user_data = docker_setup + user_data
     else:
         full_user_data = "#!/bin/sh\n" + docker_setup
 
-    # Escape double quotes for OpenNebula template syntax
-    safe_data = full_user_data.strip().replace('\\', '\\\\').replace('"', '\\"')
-    context.append(f'STARTUP_SCRIPT = "{safe_data}"')
+    import base64
+    script_b64 = base64.b64encode(full_user_data.strip().encode()).decode()
+    context.append(f'START_SCRIPT_BASE64 = "{script_b64}"')
 
     if context:
         overrides.append("CONTEXT = [ " + " , ".join(context) + " ]")
@@ -111,6 +123,19 @@ def destroy_vm(one_vm_id: int) -> None:
     """Terminate and delete a VM."""
     client = get_client()
     client.vm.action("terminate-hard", one_vm_id)
+
+
+def suspend_vm(one_vm_id: int) -> None:
+    """Suspend a VM to save resources."""
+    client = get_client()
+    client.vm.action("suspend", one_vm_id)
+
+
+def resume_vm(one_vm_id: int) -> None:
+    """Resume a suspended or powered-off VM."""
+    client = get_client()
+    client.vm.action("resume", one_vm_id)
+
 
 
 def get_vm(one_vm_id: int) -> dict:
