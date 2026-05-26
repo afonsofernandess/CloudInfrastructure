@@ -11,6 +11,82 @@ from typing import Optional
 LABEL_KEY = "cloud_user"
 
 
+def self_heal_docker(ip: str):
+    """Attempt to install or start Docker over SSH as a safety net/self-healing fallback."""
+    import os
+    import paramiko
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    gw_ip = os.getenv("GATEWAY_IP")
+    gw_port = int(os.getenv("GATEWAY_PORT", "22"))
+    gw_user = os.getenv("GATEWAY_USER")
+    gw_pass = os.getenv("GATEWAY_PASSWORD")
+
+    if not gw_ip or not gw_user:
+        print(f"DEBUG [Self-Heal]: Gateway configuration missing, skipping self-heal for {ip}")
+        return
+
+    gateway_client = paramiko.SSHClient()
+    gateway_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
+    vm_client = paramiko.SSHClient()
+    vm_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
+    try:
+        print(f"DEBUG [Self-Heal]: Connecting to SSH gateway {gw_user}@{gw_ip}:{gw_port}...")
+        gateway_client.connect(gw_ip, port=gw_port, username=gw_user, password=gw_pass, timeout=10)
+        
+        transport = gateway_client.get_transport()
+        vm_channel = transport.open_channel("direct-tcpip", (ip, 22), (gw_ip, 0))
+        
+        home = os.path.expanduser("~")
+        possible_keys = [
+            os.path.join(home, ".ssh", "id_rsa"),
+            os.path.join(home, ".ssh", "id_ed25519"),
+            os.path.join(home, ".ssh", "id_dsa"),
+        ]
+        
+        print(f"DEBUG [Self-Heal]: Connecting to VM {ip} via tunnel...")
+        vm_client.connect(
+            ip,
+            username="root",
+            sock=vm_channel,
+            timeout=10,
+            key_filename=[k for k in possible_keys if os.path.exists(k)],
+            allow_agent=True
+        )
+        
+        # Check if docker daemon is running
+        stdin, stdout, stderr = vm_client.exec_command("service docker status")
+        status_out = stdout.read().decode().strip()
+        
+        if "started" not in status_out:
+            print(f"DEBUG [Self-Heal]: Docker not started on {ip}. Status: '{status_out}'. Attempting to start...")
+            
+            # Check if docker binary exists
+            stdin, stdout, stderr = vm_client.exec_command("which docker")
+            has_docker = bool(stdout.read().decode().strip())
+            
+            if not has_docker:
+                print(f"DEBUG [Self-Heal]: Docker binary not found on {ip}. Installing...")
+                vm_client.exec_command("echo 'nameserver 8.8.8.8' > /etc/resolv.conf")
+                # Run installation commands
+                stdin, stdout, stderr = vm_client.exec_command("apk update && apk add docker && rc-update add docker default && service docker start")
+                print(f"DEBUG [Self-Heal]: Installation output: {stdout.read().decode()} | Errors: {stderr.read().decode()}")
+            else:
+                stdin, stdout, stderr = vm_client.exec_command("service docker start")
+                print(f"DEBUG [Self-Heal]: Service start output: {stdout.read().decode()} | Errors: {stderr.read().decode()}")
+        else:
+            print(f"DEBUG [Self-Heal]: Docker is already reported as started on {ip}.")
+    except Exception as e:
+        print(f"DEBUG [Self-Heal]: Self-healing failed for {ip}: {e}")
+    finally:
+        vm_client.close()
+        gateway_client.close()
+
+
+
 def get_client(username: str, vm_id: Optional[int] = None) -> docker.DockerClient:
     """Return a Docker client connected to the user's specified VM or first active VM via SSH."""
     from api.database import SessionLocal
@@ -104,6 +180,7 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
     Blocks (with timeout) until LCM_STATE is RUNNING (3) and returns the VMInstance.id.
     """
     import time
+    from datetime import datetime, timezone
     from api.database import SessionLocal
     from api.auth.models import User
     from api.compute.models import VMInstance
@@ -126,36 +203,53 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
             ).first()
             if not target_inst:
                 raise RuntimeError(f"VM ID {vm_id} not found or already terminated.")
+            
+            # Check if it is DONE in OpenNebula
+            try:
+                live = get_vm(target_inst.one_vm_id)
+            except Exception:
+                live = {"state": "DONE"}
+            if live["state"] == "DONE":
+                target_inst.terminated_at = datetime.now(timezone.utc)
+                db.commit()
+                raise RuntimeError(f"VM ID {vm_id} has been terminated/deleted.")
         else:
-            # Find any non-terminated VM, prioritizing those that are already running/active
+            # Find any non-terminated VM, checking OpenNebula state to ensure it is not DONE
             instances = db.query(VMInstance).filter(
                 VMInstance.user_id == user.id,
                 VMInstance.terminated_at == None
             ).all()
             
+            # Filter out any instances that are actually DONE in OpenNebula
+            valid_instances = []
             for inst in instances:
                 try:
                     live = get_vm(inst.one_vm_id)
-                    if live["state"] == "ACTIVE" and live["lcm_state"] == 3:
-                        target_inst = inst
-                        break
+                    if live["state"] == "DONE":
+                        inst.terminated_at = datetime.now(timezone.utc)
+                        db.commit()
+                    else:
+                        valid_instances.append((inst, live))
                 except Exception:
-                    continue
+                    # If we can't fetch it, assume it is unreachable but not necessarily DONE
+                    valid_instances.append((inst, {"state": "UNREACHABLE"}))
+            
+            # Prioritize already running/active VMs
+            for inst, live in valid_instances:
+                if live["state"] == "ACTIVE" and live.get("lcm_state") == 3:
+                    target_inst = inst
+                    break
             
             if not target_inst:
                 # If none are running, look for a suspended/powered off one to resume
-                for inst in instances:
-                    try:
-                        live = get_vm(inst.one_vm_id)
-                        if live["state"] in ("SUSPENDED", "POWEROFF", "STOPPED"):
-                            target_inst = inst
-                            break
-                    except Exception:
-                        continue
+                for inst, live in valid_instances:
+                    if live["state"] in ("SUSPENDED", "POWEROFF", "STOPPED"):
+                        target_inst = inst
+                        break
             
-            if not target_inst and instances:
-                # Fallback to the first non-terminated one if any exist
-                target_inst = instances[0]
+            if not target_inst and valid_instances:
+                # Fallback to the first valid one
+                target_inst = valid_instances[0][0]
 
         # If no VM exists, auto-provision one
         if not target_inst:
@@ -188,8 +282,14 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
 
         # Wait for the VM to be ACTIVE and LCM_STATE = 3 (RUNNING)
         max_attempts = 45  # wait up to 90 seconds (45 * 2s)
+        self_healed = False
         for attempt in range(max_attempts):
             live = get_vm(one_vm_id)
+            if live["state"] == "DONE":
+                print(f"DEBUG: VM '{target_inst.name}' has been terminated (state=DONE). Stopping wait.")
+                target_inst.terminated_at = datetime.now(timezone.utc)
+                db.commit()
+                raise RuntimeError(f"VM '{target_inst.name}' has been terminated/deleted.")
             if live["state"] == "ACTIVE" and live["lcm_state"] == 3:
                 ip = live.get("ip_address")
                 if ip and ip != "—":
@@ -206,6 +306,10 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
                             return target_inst.id
                     except Exception as test_err:
                         print(f"DEBUG: VM '{target_inst.name}' is booted but Docker/SSH is not ready yet: {test_err}")
+                        if not self_healed:
+                            print(f"DEBUG: Triggering self-healing for VM '{target_inst.name}' at IP {ip}...")
+                            self_heal_docker(ip)
+                            self_healed = True
             print(f"DEBUG: Waiting for VM '{target_inst.name}' to boot... State={live['state']}, LCM={live['lcm_state']} (attempt {attempt+1}/{max_attempts})")
             time.sleep(2)
 
@@ -229,45 +333,51 @@ def launch_container(
     client = get_client(username, resolved_vm_id)
     full_name = f"{username}-{name}"
 
-    # Pre-flight: remove any leftover container with this name that is not running
     try:
-        existing = client.containers.get(full_name)
-        if existing.status != "running":
-            existing.remove(force=True)
-        else:
-            raise RuntimeError(f"A container named '{name}' is already running — stop it first")
-    except NotFound:
-        pass  # no leftover, proceed normally
+        # Pre-flight: remove any leftover container with this name that is not running
+        try:
+            existing = client.containers.get(full_name)
+            if existing.status != "running":
+                existing.remove(force=True)
+            else:
+                raise RuntimeError(f"A container named '{name}' is already running — stop it first")
+        except NotFound:
+            pass  # no leftover, proceed normally
 
-    # Pull image if not available locally
-    try:
-        client.images.get(image)
-    except docker.errors.ImageNotFound:
-        client.images.pull(image)
+        # Pull image if not available locally
+        try:
+            client.images.get(image)
+        except docker.errors.ImageNotFound:
+            client.images.pull(image)
 
-    # Build port bindings: {container_port: None} lets Docker pick a free host port
-    port_bindings = {p: None for p in (ports or [])}
+        # Build port bindings: {container_port: None} lets Docker pick a free host port
+        port_bindings = {p: None for p in (ports or [])}
 
-    container = client.containers.create(
-        image,
-        name=full_name,
-        labels=container_label(username),
-        environment=env or {},
-        ports=port_bindings,
-    )
-    try:
-        container.start()
-    except Exception as e:
-        container.remove(force=True)
-        msg = str(e)
-        if "port is already allocated" in msg or "Bind for" in msg:
-            raise RuntimeError("Port already in use — choose a different host port") from e
-        raise RuntimeError(msg) from e
+        container = client.containers.create(
+            image,
+            name=full_name,
+            labels=container_label(username),
+            environment=env or {},
+            ports=port_bindings,
+        )
+        try:
+            container.start()
+        except Exception as e:
+            container.remove(force=True)
+            msg = str(e)
+            if "port is already allocated" in msg or "Bind for" in msg:
+                raise RuntimeError("Port already in use — choose a different host port") from e
+            raise RuntimeError(msg) from e
 
-    container.reload()
-    res = _container_to_dict(container)
-    res["vm_id"] = resolved_vm_id
-    return res
+        container.reload()
+        res = _container_to_dict(container)
+        res["vm_id"] = resolved_vm_id
+        return res
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
 
 
 def list_containers(username: str) -> list[dict]:
@@ -286,6 +396,11 @@ def list_containers(username: str) -> list[dict]:
                 all_containers.append(info)
         except Exception:
             continue
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
     return all_containers
 
 
@@ -303,6 +418,11 @@ def get_container(username: str, container_id: str) -> dict:
             continue
         except Exception:
             continue
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
     raise FileNotFoundError(f"Container '{container_id}' not found on any active VMs")
 
 
@@ -327,6 +447,11 @@ def start_container(username: str, container_id: str) -> dict:
             return info
         except NotFound:
             continue
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
     raise FileNotFoundError(f"Container '{container_id}' not found")
 
 
@@ -345,6 +470,11 @@ def stop_container(username: str, container_id: str) -> dict:
             return info
         except NotFound:
             continue
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
     raise FileNotFoundError(f"Container '{container_id}' not found")
 
 
@@ -360,6 +490,11 @@ def remove_container(username: str, container_id: str) -> None:
             return
         except NotFound:
             continue
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
     raise FileNotFoundError(f"Container '{container_id}' not found")
 
 
