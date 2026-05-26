@@ -226,11 +226,11 @@ def get_db_metrics(username: str, container_id: str, db_user: str, db_name: str,
     try:
         client, container, vm_id = get_db_container_and_client(username, container_id)
         if not container or container.status != "running" or not vm_id:
-            return {"active_connections": 0, "db_size": "0 kB", "error": "Container is not running"}
+            return {"active_connections": 0, "db_size": "0 kB", "timestamp": datetime.now(timezone.utc).isoformat(), "error": "Container is not running"}
 
         ip = get_vm_ip_by_id(vm_id)
         if not ip or ip == "localhost":
-            return {"active_connections": 0, "db_size": "0 kB", "error": "Could not resolve VM IP"}
+            return {"active_connections": 0, "db_size": "0 kB", "timestamp": datetime.now(timezone.utc).isoformat(), "error": "Could not resolve VM IP"}
 
         # Query 1: Active connections
         cmd_connections = [
@@ -261,4 +261,4 @@ def get_db_metrics(username: str, container_id: str, db_user: str, db_name: str,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
-        return {"active_connections": 0, "db_size": "0 kB", "error": str(e)}
+        return {"active_connections": 0, "db_size": "0 kB", "timestamp": datetime.now(timezone.utc).isoformat(), "error": str(e)}
