@@ -87,13 +87,18 @@ def list_instances(
     result = []
     for inst in instances:
         client, container, vm_id = db_manager.get_db_container_and_client(current_user.username, inst.container_id)
-        status_str = container.status if container else "removed"
-        
-        host_ip = "localhost"
-        if vm_id:
-            host_ip = db_manager.get_vm_ip_by_id(vm_id)
-            
-        result.append(_build_response(inst, status_str, host_ip, vm_id))
+        try:
+            status_str = container.status if container else "removed"
+            host_ip = "localhost"
+            if vm_id:
+                host_ip = db_manager.get_vm_ip_by_id(vm_id)
+            result.append(_build_response(inst, status_str, host_ip, vm_id))
+        finally:
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
     return result
 
 
@@ -112,13 +117,18 @@ def get_instance(
         raise HTTPException(status_code=404, detail="Database instance not found")
 
     client, container, vm_id = db_manager.get_db_container_and_client(current_user.username, instance.container_id)
-    status_str = container.status if container else "removed"
-    
-    host_ip = "localhost"
-    if vm_id:
-        host_ip = db_manager.get_vm_ip_by_id(vm_id)
-
-    return _build_response(instance, status_str, host_ip, vm_id)
+    try:
+        status_str = container.status if container else "removed"
+        host_ip = "localhost"
+        if vm_id:
+            host_ip = db_manager.get_vm_ip_by_id(vm_id)
+        return _build_response(instance, status_str, host_ip, vm_id)
+    finally:
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 # DELETE /databases/{instance_id} — deprovision (stop + remove container, delete record)

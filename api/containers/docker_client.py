@@ -294,15 +294,12 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
                 ip = live.get("ip_address")
                 if ip and ip != "—":
                     # Verify Docker daemon is actually running and accepting connections
+                    test_client = None
                     try:
                         import docker
                         test_client = docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True, timeout=5)
                         if test_client.ping():
                             print(f"DEBUG: VM '{target_inst.name}' is fully RUNNING and Docker is reachable at IP {ip}.")
-                            try:
-                                test_client.close()
-                            except:
-                                pass
                             return target_inst.id
                     except Exception as test_err:
                         print(f"DEBUG: VM '{target_inst.name}' is booted but Docker/SSH is not ready yet: {test_err}")
@@ -310,6 +307,12 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
                             print(f"DEBUG: Triggering self-healing for VM '{target_inst.name}' at IP {ip}...")
                             self_heal_docker(ip)
                             self_healed = True
+                    finally:
+                        if test_client:
+                            try:
+                                test_client.close()
+                            except:
+                                pass
             print(f"DEBUG: Waiting for VM '{target_inst.name}' to boot... State={live['state']}, LCM={live['lcm_state']} (attempt {attempt+1}/{max_attempts})")
             time.sleep(2)
 

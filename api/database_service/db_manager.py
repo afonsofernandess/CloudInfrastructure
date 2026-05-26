@@ -93,58 +93,64 @@ def provision_db(username: str, instance_name: str, db_name: str, vm_id: Optiona
     resolved_vm_id = ensure_user_has_running_vm(username, vm_id)
 
     client = _get_client(username, resolved_vm_id)
-    _ensure_image(client)
-
-    db_user = username
-    db_password = _random_password()
-    full_name = f"db-{username}-{instance_name}"
-
-    # Remove any stuck leftover container with this name
     try:
-        existing = client.containers.get(full_name)
-        if existing.status != "running":
-            existing.remove(force=True)
-        else:
-            raise RuntimeError(f"A database instance named '{instance_name}' is already running — delete it first")
-    except NotFound:
-        pass
+        _ensure_image(client)
 
-    container = client.containers.create(
-        POSTGRES_IMAGE,
-        name=full_name,
-        labels={LABEL_KEY: username},
-        environment={
-            "POSTGRES_DB": db_name,
-            "POSTGRES_USER": db_user,
-            "POSTGRES_PASSWORD": db_password,
-        },
-        ports={CONTAINER_PORT: None},   # let Docker pick a free host port
-        volumes={
-            f"/var/lib/postgresql/data-{instance_name}": {
-                "bind": "/var/lib/postgresql/data",
-                "mode": "rw"
-            }
-        },
-        detach=True,
-    )
+        db_user = username
+        db_password = _random_password()
+        full_name = f"db-{username}-{instance_name}"
 
-    try:
-        container.start()
-    except Exception as e:
-        container.remove(force=True)
-        raise RuntimeError(f"Failed to start PostgreSQL container: {e}") from e
+        # Remove any stuck leftover container with this name
+        try:
+            existing = client.containers.get(full_name)
+            if existing.status != "running":
+                existing.remove(force=True)
+            else:
+                raise RuntimeError(f"A database instance named '{instance_name}' is already running — delete it first")
+        except NotFound:
+            pass
 
-    # Wait up to 15 s for PostgreSQL to bind the port (it writes to logs when ready)
-    host_port = _wait_for_port(container, timeout=15)
+        container = client.containers.create(
+            POSTGRES_IMAGE,
+            name=full_name,
+            labels={LABEL_KEY: username},
+            environment={
+                "POSTGRES_DB": db_name,
+                "POSTGRES_USER": db_user,
+                "POSTGRES_PASSWORD": db_password,
+            },
+            ports={CONTAINER_PORT: None},   # let Docker pick a free host port
+            volumes={
+                f"/var/lib/postgresql/data-{instance_name}": {
+                    "bind": "/var/lib/postgresql/data",
+                    "mode": "rw"
+                }
+            },
+            detach=True,
+        )
 
-    return {
-        "container_id": container.id,
-        "host_port": host_port,
-        "db_name": db_name,
-        "db_user": db_user,
-        "db_password": db_password,
-        "vm_id": resolved_vm_id,
-    }
+        try:
+            container.start()
+        except Exception as e:
+            container.remove(force=True)
+            raise RuntimeError(f"Failed to start PostgreSQL container: {e}") from e
+
+        # Wait up to 15 s for PostgreSQL to bind the port (it writes to logs when ready)
+        host_port = _wait_for_port(container, timeout=15)
+
+        return {
+            "container_id": container.id,
+            "host_port": host_port,
+            "db_name": db_name,
+            "db_user": db_user,
+            "db_password": db_password,
+            "vm_id": resolved_vm_id,
+        }
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
 
 
 def _wait_for_port(container, timeout: int = 15) -> int:
@@ -164,13 +170,22 @@ def get_db_container_and_client(username: str, container_id: str):
     """Search across all active VMs for the database container and return (client, container, vm_id)."""
     from api.containers.docker_client import get_all_clients
     clients = get_all_clients(username)
+    found_client, found_container, found_vm_id = None, None, None
     for vm_id, client in clients:
+        if found_container is None:
+            try:
+                c = client.containers.get(container_id)
+                found_client = client
+                found_container = c
+                found_vm_id = vm_id
+                continue
+            except Exception:
+                pass
         try:
-            c = client.containers.get(container_id)
-            return client, c, vm_id
+            client.close()
         except Exception:
-            continue
-    return None, None, None
+            pass
+    return found_client, found_container, found_vm_id
 
 
 def get_vm_ip_by_id(vm_id: int) -> str:
@@ -192,13 +207,20 @@ def get_vm_ip_by_id(vm_id: int) -> str:
 
 def get_container_status(username: str, container_id: str) -> str:
     """Return the Docker status string (running, exited, …) for a container."""
+    client = None
     try:
-        _, container, _ = get_db_container_and_client(username, container_id)
+        client, container, _ = get_db_container_and_client(username, container_id)
         if container:
             return container.status
         return "removed"
     except Exception:
         return "unknown"
+    finally:
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def deprovision_db(username: str, container_id: str) -> None:
@@ -206,23 +228,30 @@ def deprovision_db(username: str, container_id: str) -> None:
     Stop and remove the PostgreSQL container.
     Raises PermissionError if the container does not belong to the user.
     """
+    client = None
     try:
-        _, container, _ = get_db_container_and_client(username, container_id)
-    except Exception:
-        return  # connection error, VM offline etc.
+        client, container, _ = get_db_container_and_client(username, container_id)
+        if not container:
+            return  # already gone — treat as success
 
-    if not container:
-        return  # already gone — treat as success
+        if container.labels.get(LABEL_KEY) != username:
+            raise PermissionError("Database instance does not belong to this user")
 
-    if container.labels.get(LABEL_KEY) != username:
-        raise PermissionError("Database instance does not belong to this user")
-
-    container.remove(force=True)
+        container.remove(force=True)
+    except Exception as e:
+        raise e
+    finally:
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def get_db_metrics(username: str, container_id: str, db_user: str, db_name: str, db_password: str) -> dict:
     """Run queries inside the PostgreSQL container via Docker exec to fetch connection count and size."""
     import subprocess
+    client = None
     try:
         client, container, vm_id = get_db_container_and_client(username, container_id)
         if not container or container.status != "running" or not vm_id:
@@ -262,3 +291,9 @@ def get_db_metrics(username: str, container_id: str, db_user: str, db_name: str,
         }
     except Exception as e:
         return {"active_connections": 0, "db_size": "0 kB", "timestamp": datetime.now(timezone.utc).isoformat(), "error": str(e)}
+    finally:
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass

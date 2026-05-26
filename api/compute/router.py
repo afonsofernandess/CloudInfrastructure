@@ -150,9 +150,14 @@ def terminate_vm(
             DBInstance.user_id == current_user.id
         ).all()
         for db_inst in user_db_instances:
-            _, _, db_vm_id = db_manager.get_db_container_and_client(
+            client, _, db_vm_id = db_manager.get_db_container_and_client(
                 current_user.username, db_inst.container_id
             )
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
             if db_vm_id == instance.id:
                 db.delete(db_inst)
     except Exception:
