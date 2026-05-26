@@ -87,7 +87,8 @@ class AutoScaler:
         db = SessionLocal()
         try:
             from api.auth.models import User
-            from opennebula.vm_manager import suspend_vm
+            from opennebula.vm_manager import suspend_vm, resume_vm
+
             
             users = db.query(User).all()
             for user in users:

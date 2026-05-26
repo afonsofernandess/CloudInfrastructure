@@ -127,11 +127,35 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
             if not target_inst:
                 raise RuntimeError(f"VM ID {vm_id} not found or already terminated.")
         else:
-            # Find any non-terminated VM
-            target_inst = db.query(VMInstance).filter(
+            # Find any non-terminated VM, prioritizing those that are already running/active
+            instances = db.query(VMInstance).filter(
                 VMInstance.user_id == user.id,
                 VMInstance.terminated_at == None
-            ).first()
+            ).all()
+            
+            for inst in instances:
+                try:
+                    live = get_vm(inst.one_vm_id)
+                    if live["state"] == "ACTIVE" and live["lcm_state"] == 3:
+                        target_inst = inst
+                        break
+                except Exception:
+                    continue
+            
+            if not target_inst:
+                # If none are running, look for a suspended/powered off one to resume
+                for inst in instances:
+                    try:
+                        live = get_vm(inst.one_vm_id)
+                        if live["state"] in ("SUSPENDED", "POWEROFF", "STOPPED"):
+                            target_inst = inst
+                            break
+                    except Exception:
+                        continue
+            
+            if not target_inst and instances:
+                # Fallback to the first non-terminated one if any exist
+                target_inst = instances[0]
 
         # If no VM exists, auto-provision one
         if not target_inst:
@@ -169,8 +193,19 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
             if live["state"] == "ACTIVE" and live["lcm_state"] == 3:
                 ip = live.get("ip_address")
                 if ip and ip != "—":
-                    print(f"DEBUG: VM '{target_inst.name}' is fully RUNNING with IP {ip}.")
-                    return target_inst.id
+                    # Verify Docker daemon is actually running and accepting connections
+                    try:
+                        import docker
+                        test_client = docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True, timeout=5)
+                        if test_client.ping():
+                            print(f"DEBUG: VM '{target_inst.name}' is fully RUNNING and Docker is reachable at IP {ip}.")
+                            try:
+                                test_client.close()
+                            except:
+                                pass
+                            return target_inst.id
+                    except Exception as test_err:
+                        print(f"DEBUG: VM '{target_inst.name}' is booted but Docker/SSH is not ready yet: {test_err}")
             print(f"DEBUG: Waiting for VM '{target_inst.name}' to boot... State={live['state']}, LCM={live['lcm_state']} (attempt {attempt+1}/{max_attempts})")
             time.sleep(2)
 

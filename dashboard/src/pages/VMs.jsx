@@ -114,7 +114,7 @@ function VMDetailDrawer({ vm, onClose }) {
               <span className="text-xs text-slate-400 uppercase tracking-wider">State</span>
               <div className="mt-1">
                 <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', vmStateColor(vm.state))}>
-                  {vm.state || '—'}
+                  {vm.state === 'SUSPENDED' ? 'Sleeping' : (vm.state || '—')}
                 </span>
               </div>
             </div>
@@ -254,7 +254,7 @@ export default function VMs() {
                     <td className="px-4 py-3 text-slate-400">{vm.one_vm_id ?? '—'}</td>
                     <td className="px-4 py-3">
                       <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', vmStateColor(vm.state))}>
-                        {vm.state || '—'}
+                        {vm.state === 'SUSPENDED' ? 'Sleeping' : (vm.state || '—')}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-slate-300">

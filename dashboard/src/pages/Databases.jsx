@@ -238,7 +238,7 @@ export default function Databases() {
   const [form, setForm] = useState({ name: '', db_name: '' })
   const [selectedVmId, setSelectedVmId] = useState('')
 
-  const activeVms = vms?.filter((vm) => vm.state === 'ACTIVE') || []
+  const activeVms = vms?.filter((vm) => ['ACTIVE', 'SUSPENDED', 'POWEROFF', 'STOPPED', 'PENDING'].includes(vm.state)) || []
 
   // Auto-select VM if there is exactly one active
   useEffect(() => {
@@ -371,23 +371,26 @@ export default function Databases() {
       >
         <form onSubmit={handleProvision} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">Target Virtual Machine <span className="text-red-400">*</span></label>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Target Virtual Machine</label>
             <select
               value={selectedVmId}
               onChange={(e) => setSelectedVmId(e.target.value)}
-              required
               className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
             >
-              <option value="" disabled>Select a VM...</option>
-              {activeVms.map((vm) => (
-                <option key={vm.id} value={vm.id}>
-                  {vm.name || `VM #${vm.id}`} ({vm.ip_address || 'No IP'})
-                </option>
-              ))}
+              <option value="">Auto-select / Provision VM (Recommended)</option>
+              {activeVms.map((vm) => {
+                const stateLabel = vm.state === 'SUSPENDED' ? 'Sleeping' : vm.state;
+                const ipLabel = vm.ip_address && vm.ip_address !== '—' ? vm.ip_address : 'No IP';
+                return (
+                  <option key={vm.id} value={vm.id}>
+                    {vm.name || `VM #${vm.id}`} ({ipLabel} - {stateLabel})
+                  </option>
+                );
+              })}
             </select>
             {activeVms.length === 0 && (
-              <p className="text-xs text-red-400 mt-1">
-                No active VMs found. You must launch and wait for a VM to be ACTIVE before provisioning databases.
+              <p className="text-xs text-blue-400 mt-1.5 flex items-center gap-1">
+                <span>ℹ️</span> No active VMs found. The platform will automatically wake up or provision a VM for you in the background!
               </p>
             )}
           </div>

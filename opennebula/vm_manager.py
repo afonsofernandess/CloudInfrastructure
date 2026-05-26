@@ -85,7 +85,7 @@ def create_vm(
 
     # Escape double quotes for OpenNebula template syntax
     safe_data = full_user_data.strip().replace('\\', '\\\\').replace('"', '\\"')
-    context.append(f'STARTUP_SCRIPT = "{safe_data}"')
+    context.append(f'START_SCRIPT = "{safe_data}"')
 
     if context:
         overrides.append("CONTEXT = [ " + " , ".join(context) + " ]")

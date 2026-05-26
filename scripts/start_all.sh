@@ -62,7 +62,7 @@ done
 
 # ── 2. FastAPI backend ─────────────────────────────────────────────────────────
 echo "[2/3] Starting FastAPI backend..."
-uvicorn api.main:app --port 8000 \
+uvicorn api.main:app --port 8000 --reload \
   > /tmp/cloud_api.log 2>&1 &
 PIDS+=($!)
 
