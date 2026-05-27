@@ -57,17 +57,48 @@ def provision_vm(
 
     name = data.name or f"vm-user{current_user.id}-{int(datetime.now(timezone.utc).timestamp())}"
 
+    # Pre-warming optimization: check if there is an active pre-warmed VM we can claim
+    prewarmed_vm = None
     try:
-        one_vm_id = create_vm(
-            name=name,
-            template_id=data.template_id,
-            user_id=current_user.one_user_id,
-            cpu=data.cpu,
-            memory_mb=data.memory_mb,
-            user_data=data.user_data,
-        )
+        from opennebula.vm_manager import list_all_vms
+        all_vms = list_all_vms()
+        for vm in all_vms:
+            if vm["name"].startswith("prewarmed-vm-") and vm["state"] == "ACTIVE" and vm.get("lcm_state") == 3:
+                # Make sure it isn't already registered as active in our DB
+                inst_check = db.query(VMInstance).filter(VMInstance.one_vm_id == vm["one_vm_id"]).first()
+                if not inst_check or inst_check.terminated_at is not None:
+                    prewarmed_vm = vm
+                    break
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OpenNebula error: {e}")
+        print(f"DEBUG: Failed to search for pre-warmed VMs: {e}")
+
+    one_vm_id = None
+    if prewarmed_vm:
+        try:
+            one_vm_id = prewarmed_vm["one_vm_id"]
+            # Claim in OpenNebula: rename and change ownership
+            from opennebula.connection import get_client
+            client = get_client()
+            client.vm.rename(one_vm_id, name)
+            client.vm.chown(one_vm_id, current_user.one_user_id, -1)
+            print(f"DEBUG: Successfully claimed pre-warmed VM for manual provision (one_vm_id={one_vm_id})")
+        except Exception as e:
+            print(f"DEBUG: Failed to claim pre-warmed VM, falling back to full creation: {e}")
+            prewarmed_vm = None
+
+    if not prewarmed_vm:
+        # Fall back to standard on-demand creation
+        try:
+            one_vm_id = create_vm(
+                name=name,
+                template_id=data.template_id,
+                user_id=current_user.one_user_id,
+                cpu=data.cpu,
+                memory_mb=data.memory_mb,
+                user_data=data.user_data,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"OpenNebula error: {e}")
 
     instance = VMInstance(
         user_id=current_user.id,

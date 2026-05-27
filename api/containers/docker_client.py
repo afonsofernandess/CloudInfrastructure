@@ -274,15 +274,49 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
                 # Fallback to the first valid one
                 target_inst = valid_instances[0][0]
 
-        # If no VM exists, auto-provision one
+        # If no VM exists, auto-provision one (or claim a pre-warmed standby VM)
         if not target_inst:
             vm_name = f"auto-vm-{username}-{int(time.time())}"
-            print(f"DEBUG: No active VM found for '{username}'. Auto-provisioning VM '{vm_name}'...")
-            one_vm_id = create_vm(
-                name=vm_name,
-                template_id=sla.DEFAULT_TEMPLATE_ID,
-                user_id=user.one_user_id,
-            )
+            
+            # Check for a pre-warmed standby VM
+            prewarmed_vm = None
+            try:
+                from opennebula.vm_manager import list_all_vms
+                all_vms = list_all_vms()
+                for vm in all_vms:
+                    if vm["name"].startswith("prewarmed-vm-") and vm["state"] == "ACTIVE" and vm.get("lcm_state") == 3:
+                        # Make sure it isn't already registered as active in our DB
+                        inst_check = db.query(VMInstance).filter(VMInstance.one_vm_id == vm["one_vm_id"]).first()
+                        if not inst_check or inst_check.terminated_at is not None:
+                            prewarmed_vm = vm
+                            break
+            except Exception as e:
+                print(f"DEBUG: Failed to search for pre-warmed VMs: {e}")
+
+            one_vm_id = None
+            if prewarmed_vm:
+                try:
+                    one_vm_id = prewarmed_vm["one_vm_id"]
+                    # Claim in OpenNebula: rename and change ownership
+                    from opennebula.connection import get_client
+                    client = get_client()
+                    client.vm.rename(one_vm_id, vm_name)
+                    client.vm.chown(one_vm_id, user.one_user_id, -1)
+                    print(f"DEBUG: Successfully claimed pre-warmed VM '{vm_name}' (one_vm_id={one_vm_id}) for user '{username}'")
+                except Exception as e:
+                    print(f"DEBUG: Failed to claim pre-warmed VM, falling back to full creation: {e}")
+                    prewarmed_vm = None
+
+            if not prewarmed_vm:
+                # Fall back to standard on-demand creation (takes 90s)
+                print(f"DEBUG: No pre-warmed VM available. Auto-provisioning VM '{vm_name}'...")
+                one_vm_id = create_vm(
+                    name=vm_name,
+                    template_id=sla.DEFAULT_TEMPLATE_ID,
+                    user_id=user.one_user_id,
+                )
+                print(f"DEBUG: VM '{vm_name}' created from scratch in OpenNebula with one_vm_id={one_vm_id}")
+
             target_inst = VMInstance(
                 user_id=user.id,
                 one_vm_id=one_vm_id,
@@ -292,7 +326,6 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
             db.add(target_inst)
             db.commit()
             db.refresh(target_inst)
-            print(f"DEBUG: VM '{vm_name}' created in OpenNebula with one_vm_id={one_vm_id}")
 
         # Check the VM state in OpenNebula
         one_vm_id = target_inst.one_vm_id

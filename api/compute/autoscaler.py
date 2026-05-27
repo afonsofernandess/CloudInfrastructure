@@ -81,6 +81,22 @@ class AutoScaler:
             log.error("Failed to record metrics: %s", e)
         finally:
             db.close()
+        # Maintain Pre-Warming (Hot Standby) Pool
+        now = datetime.now(timezone.utc)
+        try:
+            all_vms = list_all_vms()
+            prewarmed_vms = [
+                vm for vm in all_vms
+                if vm["name"].startswith("prewarmed-vm-")
+                and vm["state"] in ("ACTIVE", "PENDING")
+            ]
+            if len(prewarmed_vms) < 1 and total < sla.MAX_VMS:
+                name = f"prewarmed-vm-{int(now.timestamp())}"
+                # Create the VM under system/oneadmin (user_id=None)
+                one_vm_id = create_vm(name, sla.DEFAULT_TEMPLATE_ID, user_id=None)
+                log.info("Replenishing Pre-Warming Pool — created standby VM '%s' (one_vm_id=%d)", name, one_vm_id)
+        except Exception as e:
+            log.error("Failed to maintain pre-warming pool: %s", e)
 
         # Check for inactive users and suspend their VMs
         now = datetime.now(timezone.utc)
