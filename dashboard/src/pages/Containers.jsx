@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Box, Plus, Play, Square, Trash2, LayoutGrid, List, RefreshCw } from 'lucide-react'
+import { Box, Plus, Play, Square, Trash2, LayoutGrid, List, RefreshCw, FileText } from 'lucide-react'
+import toast from 'react-hot-toast'
 import {
   useContainers,
   useLaunchContainer,
   useStartContainer,
   useStopContainer,
   useRemoveContainer,
+  useContainerLogs,
 } from '../hooks/useContainers'
 import { useVMs } from '../hooks/useVMs'
 import Modal from '../components/shared/Modal'
@@ -30,7 +32,7 @@ function formatPorts(ports) {
     .join(', ')
 }
 
-function ContainerCard({ container, onStart, onStop, onRemove, vms }) {
+function ContainerCard({ container, onStart, onStop, onRemove, onViewLogs, vms }) {
   const statusClass = containerStatusColor(container.status)
   const hostingVm = vms?.find((v) => v.id === container.vm_id)
   const vmLabel = hostingVm
@@ -61,25 +63,127 @@ function ContainerCard({ container, onStart, onStop, onRemove, vms }) {
         <button
           onClick={() => onStart(container.container_id)}
           disabled={container.status === 'running'}
-          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-500/10 text-green-400 hover:bg-green-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-green-500/10 text-green-400 hover:bg-green-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          <Play className="w-3.5 h-3.5" /> Start
+          <Play className="w-3 h-3" /> Start
         </button>
         <button
           onClick={() => onStop(container.container_id)}
           disabled={container.status !== 'running'}
-          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          <Square className="w-3.5 h-3.5" /> Stop
+          <Square className="w-3 h-3" /> Stop
+        </button>
+        <button
+          onClick={() => onViewLogs(container)}
+          className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
+        >
+          <FileText className="w-3 h-3" /> Logs
         </button>
         <button
           onClick={() => onRemove(container.container_id)}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+          className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
         >
-          <Trash2 className="w-3.5 h-3.5" />
+          <Trash2 className="w-3 h-3" />
         </button>
       </div>
     </div>
+  )
+}
+
+function ContainerLogsModal({ container, onClose }) {
+  const [tail, setTail] = useState(100)
+  const { data, isLoading, error } = useContainerLogs(container?.container_id, !!container, tail)
+  const logEndRef = useRef(null)
+
+  useEffect(() => {
+    if (logEndRef.current) {
+      logEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [data?.logs])
+
+  if (!container) return null
+
+  const toastStyle = { style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }
+
+  return (
+    <Modal
+      isOpen={!!container}
+      onClose={onClose}
+      title={`Logs: ${container.name}`}
+      maxWidth="max-w-3xl"
+    >
+      <div className="space-y-4">
+        <div className="flex items-center justify-between text-xs text-slate-400">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-slate-300">Image:</span>
+            <span className="font-mono text-blue-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">{container.image}</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1">
+              <span>Lines:</span>
+              <select
+                value={tail}
+                onChange={(e) => setTail(parseInt(e.target.value, 10))}
+                className="bg-slate-800 border border-slate-700 text-slate-200 rounded px-1.5 py-0.5 focus:outline-none"
+              >
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="250">250</option>
+                <option value="500">500</option>
+              </select>
+            </label>
+            <div className="flex items-center gap-1.5 text-slate-400">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+              </span>
+              <span>Live Updates</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-black/90 text-slate-200 p-4 rounded-xl border border-slate-800 font-mono text-xs h-96 overflow-y-auto leading-relaxed whitespace-pre-wrap">
+          {isLoading && !data ? (
+            <div className="flex items-center justify-center h-full text-slate-500">
+              <RefreshCw className="w-4 h-4 animate-spin mr-2" />
+              Loading logs...
+            </div>
+          ) : error ? (
+            <div className="text-red-400">Error loading logs: {error.message}</div>
+          ) : !data?.logs ? (
+            <div className="text-slate-500 italic">No log entries found.</div>
+          ) : (
+            <>
+              {data.logs}
+              <div ref={logEndRef} />
+            </>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-3 pt-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (data?.logs) {
+                navigator.clipboard.writeText(data.logs)
+                toast.success('Logs copied to clipboard', toastStyle)
+              }
+            }}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
+          >
+            Copy Logs
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -94,6 +198,7 @@ export default function Containers() {
   const [viewMode, setViewMode] = useState('grid')
   const [showLaunchModal, setShowLaunchModal] = useState(false)
   const [confirmRemoveId, setConfirmRemoveId] = useState(null)
+  const [selectedLogsContainer, setSelectedLogsContainer] = useState(null)
   const queryClient = useQueryClient()
 
   // Time-based stepper: track when launch started and auto-advance stages
@@ -293,6 +398,7 @@ export default function Containers() {
               onStart={(id) => start.mutate(id)}
               onStop={(id) => stop.mutate(id)}
               onRemove={(id) => setConfirmRemoveId(id)}
+              onViewLogs={(c) => setSelectedLogsContainer(c)}
             />
           ))}
         </div>
@@ -346,6 +452,13 @@ export default function Containers() {
                             title="Stop"
                           >
                             <Square className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setSelectedLogsContainer(c)}
+                            className="p-1.5 rounded text-slate-400 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+                            title="View Logs"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
                           </button>
                           <button
                             onClick={() => setConfirmRemoveId(c.container_id)}
@@ -571,6 +684,11 @@ export default function Containers() {
         message="This will permanently remove the container. Continue?"
         confirmLabel="Remove"
         danger
+      />
+
+      <ContainerLogsModal
+        container={selectedLogsContainer}
+        onClose={() => setSelectedLogsContainer(null)}
       />
     </div>
   )

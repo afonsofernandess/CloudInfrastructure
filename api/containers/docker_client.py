@@ -593,6 +593,32 @@ def remove_container(username: str, container_id: str) -> None:
     raise FileNotFoundError(f"Container '{container_id}' not found")
 
 
+def get_container_logs(username: str, container_id: str, tail: int = 100) -> str:
+    """Get the logs of a container, searching across all active VMs."""
+    clients = get_all_clients(username)
+    for vm_id, client in clients:
+        try:
+            container = client.containers.get(container_id)
+            if container.labels.get(LABEL_KEY) != username:
+                raise PermissionError("Container does not belong to this user")
+            # logs returns bytes, let's decode to string
+            logs_bytes = container.logs(stdout=True, stderr=True, tail=tail)
+            return logs_bytes.decode("utf-8", errors="ignore")
+        except NotFound:
+            continue
+        except PermissionError as e:
+            raise e
+        except Exception:
+            continue
+        finally:
+            try:
+                client.close()
+                client.api.adapters.clear()
+            except Exception:
+                pass
+    raise FileNotFoundError(f"Container '{container_id}' not found")
+
+
 def _container_to_dict(container) -> dict:
     container.reload()
     ports = container.ports or {}
