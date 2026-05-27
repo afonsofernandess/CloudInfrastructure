@@ -20,9 +20,9 @@ def _build_vm_response(instance: VMInstance) -> dict:
     try:
         live = get_vm(instance.one_vm_id)
     except pyone.OneNoExistsException:
-        live = {"state": "DONE", "cpu_usage_pct": 0.0, "memory_mb": 0.0, "disk_gb": 2.0}
+        live = {"state": "DONE", "cpu_usage_pct": 0.0, "memory_mb": 0.0, "memory_limit_mb": 2048.0, "disk_gb": 2.0}
     except Exception:
-        live = {"state": "UNREACHABLE", "cpu_usage_pct": 0.0, "memory_mb": 0.0, "disk_gb": 2.0}
+        live = {"state": "UNREACHABLE", "cpu_usage_pct": 0.0, "memory_mb": 0.0, "memory_limit_mb": 2048.0, "disk_gb": 2.0}
 
     return {
         "id": instance.id,
@@ -34,6 +34,7 @@ def _build_vm_response(instance: VMInstance) -> dict:
         "ip_address": live.get("ip_address", "—"),
         "cpu_usage_pct": live["cpu_usage_pct"],
         "memory_mb": live["memory_mb"],
+        "memory_limit_mb": live.get("memory_limit_mb", 2048.0),
         "disk_gb": live.get("disk_gb", 2.0),
     }
 
@@ -223,6 +224,8 @@ def cluster_status(
         sum(vm["cpu_usage_pct"] for vm in active_vms) / len(active_vms)
         if active_vms else 0.0
     )
+    used_ram = sum(vm.get("memory_mb", 0.0) for vm in active_vms)
+    total_ram = sum(vm.get("memory_limit_mb", 2048.0) for vm in active_vms)
 
     return {
         "total_vms": len(user_vms),
@@ -233,6 +236,8 @@ def cluster_status(
         "max_vms": sla.MAX_VMS,
         "scale_up_threshold_pct": sla.SCALE_UP_CPU_PCT,
         "scale_down_threshold_pct": sla.SCALE_DOWN_CPU_PCT,
+        "total_ram_mb": float(total_ram),
+        "used_ram_mb": float(used_ram),
     }
 
 

@@ -119,7 +119,12 @@ function VMDetailDrawer({ vm, onClose }) {
               </div>
             </div>
             <Field label="CPU Usage" value={vm.cpu_usage_pct != null ? `${vm.cpu_usage_pct.toFixed(1)}%` : '—'} />
-            <Field label="Memory (MB)" value={vm.memory_mb ?? '—'} />
+            <Field 
+              label="RAM (Used/Total)" 
+              value={vm.memory_mb != null && vm.memory_limit_mb != null 
+                ? `${vm.memory_mb.toFixed(0)} MB / ${vm.memory_limit_mb.toFixed(0)} MB` 
+                : (vm.memory_mb ?? '—')} 
+            />
             <Field label="Storage" value={vm.disk_gb != null ? `${vm.disk_gb} GB` : '—'} />
           </div>
 
@@ -233,7 +238,7 @@ export default function VMs() {
                   <th className="px-4 py-3 text-left">ONE ID</th>
                   <th className="px-4 py-3 text-left">State</th>
                   <th className="px-4 py-3 text-left">CPU %</th>
-                  <th className="px-4 py-3 text-left">Memory (MB)</th>
+                  <th className="px-4 py-3 text-left">RAM (Used/Total)</th>
                   <th className="px-4 py-3 text-left">Created</th>
                   <th className="px-4 py-3 text-left">Actions</th>
                 </tr>
@@ -263,7 +268,11 @@ export default function VMs() {
                     <td className="px-4 py-3 text-slate-300">
                       {vm.cpu_usage_pct != null ? `${vm.cpu_usage_pct.toFixed(1)}%` : '—'}
                     </td>
-                    <td className="px-4 py-3 text-slate-300">{vm.memory_mb ?? '—'}</td>
+                    <td className="px-4 py-3 text-slate-300">
+                      {vm.memory_mb != null && vm.memory_limit_mb != null
+                        ? `${vm.memory_mb.toFixed(0)} / ${vm.memory_limit_mb.toFixed(0)} MB`
+                        : (vm.memory_mb ?? '—')}
+                    </td>
                     <td className="px-4 py-3 text-slate-400">{formatDate(vm.created_at)}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1">
@@ -293,43 +302,67 @@ export default function VMs() {
       </div>
 
       {/* SLA banner */}
-      {cluster && (
-        <div className="bg-slate-900 border border-slate-700 rounded-xl p-5">
-          <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">SLA / Cluster Health</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <div className="flex justify-between text-xs text-slate-400 mb-1.5">
-                <span>VM Usage</span>
-                <span>{cluster.total_vms} / {cluster.max_vms}</span>
+      {cluster && (() => {
+        const ramPct = cluster.total_ram_mb > 0 
+          ? Math.min(100, (cluster.used_ram_mb / cluster.total_ram_mb) * 100) 
+          : 0;
+
+        const formatRam = (mb) => {
+          if (mb == null) return '0 MB';
+          if (mb < 1024) return `${mb.toFixed(0)} MB`;
+          return `${(mb / 1024).toFixed(1)} GB`;
+        };
+
+        return (
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">SLA / Cluster Health</h3>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 items-center">
+              <div>
+                <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+                  <span>VM Usage</span>
+                  <span>{cluster.total_vms} / {cluster.max_vms}</span>
+                </div>
+                <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 rounded-full"
+                    style={{ width: `${Math.min(100, (cluster.total_vms / (cluster.max_vms || 1)) * 100)}%` }}
+                  />
+                </div>
               </div>
-              <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-blue-500 rounded-full"
-                  style={{ width: `${Math.min(100, (cluster.total_vms / (cluster.max_vms || 1)) * 100)}%` }}
-                />
+              <div>
+                <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+                  <span>Avg CPU</span>
+                  <span>{avgCpu.toFixed(1)}%</span>
+                </div>
+                <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className={clsx('h-full rounded-full', avgCpu > 80 ? 'bg-red-500' : avgCpu > 60 ? 'bg-yellow-500' : 'bg-green-500')}
+                    style={{ width: `${avgCpu}%` }}
+                  />
+                </div>
               </div>
-            </div>
-            <div>
-              <div className="flex justify-between text-xs text-slate-400 mb-1.5">
-                <span>Avg CPU</span>
-                <span>{avgCpu.toFixed(1)}%</span>
+              <div>
+                <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+                  <span>RAM Usage</span>
+                  <span>{formatRam(cluster.used_ram_mb)} / {formatRam(cluster.total_ram_mb)}</span>
+                </div>
+                <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className={clsx('h-full rounded-full', ramPct > 80 ? 'bg-red-500' : ramPct > 60 ? 'bg-yellow-500' : 'bg-green-500')}
+                    style={{ width: `${ramPct}%` }}
+                  />
+                </div>
               </div>
-              <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-                <div
-                  className={clsx('h-full rounded-full', avgCpu > 80 ? 'bg-red-500' : avgCpu > 60 ? 'bg-yellow-500' : 'bg-green-500')}
-                  style={{ width: `${avgCpu}%` }}
-                />
+              <div className="flex items-center gap-2 text-sm md:justify-end">
+                <span className="text-slate-400">Autoscaler:</span>
+                <span className={clsx('font-medium', cluster.autoscaler_enabled ? 'text-green-400' : 'text-red-400')}>
+                  {cluster.autoscaler_enabled ? 'Enabled' : 'Disabled'}
+                </span>
               </div>
-            </div>
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-slate-400">Autoscaler:</span>
-              <span className={clsx('font-medium', cluster.autoscaler_enabled ? 'text-green-400' : 'text-red-400')}>
-                {cluster.autoscaler_enabled ? 'Enabled' : 'Disabled'}
-              </span>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       <Modal 
         isOpen={showLaunchModal} 

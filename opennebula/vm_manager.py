@@ -196,7 +196,8 @@ def _vm_to_dict(vm) -> dict:
             if isinstance(context, dict):
                 ip_address = context.get("ETH0_IP", "—")
 
-        # Extract disk size (SIZE in MB)
+        # Extract disk size (SIZE in MB) and allocated memory (MEMORY in MB)
+        memory_limit_mb = 2048.0
         if isinstance(template, dict):
             disks = template.get("DISK")
             if disks:
@@ -208,6 +209,10 @@ def _vm_to_dict(vm) -> dict:
                     size_mb = disks.get("SIZE")
                     if size_mb:
                         disk_gb = round(float(size_mb) / 1024, 1)
+
+            mem = template.get("MEMORY")
+            if mem:
+                memory_limit_mb = float(mem)
     except:
         pass
 
@@ -221,5 +226,6 @@ def _vm_to_dict(vm) -> dict:
         "ip_address": ip_address,
         "cpu_usage_pct": round(cpu_usage, 1),
         "memory_mb": round(memory_kb / 1024, 1),
+        "memory_limit_mb": memory_limit_mb,
         "disk_gb": disk_gb,
     }

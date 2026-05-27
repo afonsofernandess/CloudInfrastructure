@@ -21,6 +21,7 @@ class VMResponse(BaseModel):
     ip_address: str
     cpu_usage_pct: float
     memory_mb: float
+    memory_limit_mb: float
     disk_gb: float
     created_at: datetime
 
@@ -37,6 +38,8 @@ class ClusterStatus(BaseModel):
     max_vms: int
     scale_up_threshold_pct: float
     scale_down_threshold_pct: float
+    total_ram_mb: float
+    used_ram_mb: float
 
 
 class VMMetricResponse(BaseModel):
