@@ -89,7 +89,6 @@ class AutoScaler:
             from api.auth.models import User
             from opennebula.vm_manager import suspend_vm, resume_vm
 
-            
             users = db.query(User).all()
             for user in users:
                 if user.one_user_id is not None and user.last_active_at:
@@ -110,6 +109,11 @@ class AutoScaler:
                             log.info("Suspending VM '%s' (one_vm_id=%d) due to user '%s' inactivity (idle for %.1fs)", 
                                      vm["name"], vm["one_vm_id"], user.username, inactive_duration)
                             suspend_vm(vm["one_vm_id"])
+                            # Mark in the DB that the system suspended this VM
+                            inst = db.query(VMInstance).filter(VMInstance.one_vm_id == vm["one_vm_id"]).first()
+                            if inst:
+                                inst.suspended_by_system = True
+                                db.commit()
                     else:
                         # User is active! Check if they have suspended user VMs that should be resumed
                         suspended_vms = [
@@ -118,9 +122,14 @@ class AutoScaler:
                             and vm["state"] in ("SUSPENDED", "POWEROFF")
                         ]
                         for vm in suspended_vms:
-                            log.info("Resuming VM '%s' (one_vm_id=%d) because user '%s' is active",
-                                     vm["name"], vm["one_vm_id"], user.username)
-                            resume_vm(vm["one_vm_id"])
+                            # Only auto-resume if the system suspended it automatically
+                            inst = db.query(VMInstance).filter(VMInstance.one_vm_id == vm["one_vm_id"]).first()
+                            if inst and inst.suspended_by_system:
+                                log.info("Resuming VM '%s' (one_vm_id=%d) because user '%s' is active",
+                                         vm["name"], vm["one_vm_id"], user.username)
+                                resume_vm(vm["one_vm_id"])
+                                inst.suspended_by_system = False
+                                db.commit()
         except Exception as e:
             log.error("Failed to manage user VMs state: %s", e)
         finally:
@@ -138,36 +147,68 @@ class AutoScaler:
             # Find the user who should own this VM (the one whose VMs are busy)
             target_user_id = None
             local_user_id = None
+            
+            # Group active user VMs by owner and find the one with the highest average CPU usage
+            user_cpu_sums = {}
+            user_cpu_counts = {}
+            user_local_ids = {}
+            
             all_vms = list_all_vms()
-            for vm in all_vms:
-                if vm["state"] == "ACTIVE" and vm["one_owner_id"] != 0: # Not oneadmin
-                    target_user_id = vm["one_owner_id"]
-                    # Get our local user_id from the DB
-                    db = SessionLocal()
-                    inst = db.query(VMInstance).filter(VMInstance.one_vm_id == vm["one_vm_id"]).first()
-                    if inst:
-                        local_user_id = inst.user_id
-                    db.close()
-                    break
-            
-            # If we found a user, create the VM for them
-            one_vm_id = create_vm(name, sla.DEFAULT_TEMPLATE_ID, user_id=target_user_id)
-            
-            # Create the local DB record so they see it in the dashboard
-            if local_user_id:
-                db = SessionLocal()
-                new_inst = VMInstance(
-                    user_id=local_user_id,
-                    one_vm_id=one_vm_id,
-                    name=name,
-                    template_id=sla.DEFAULT_TEMPLATE_ID
-                )
-                db.add(new_inst)
-                db.commit()
-                db.close()
+            db = SessionLocal()
+            try:
+                for vm in all_vms:
+                    if vm["state"] == "ACTIVE" and vm["one_owner_id"] != 0:
+                        inst = db.query(VMInstance).filter(VMInstance.one_vm_id == vm["one_vm_id"]).first()
+                        if inst:
+                            owner_id = vm["one_owner_id"]
+                            user_cpu_sums[owner_id] = user_cpu_sums.get(owner_id, 0.0) + vm["cpu_usage_pct"]
+                            user_cpu_counts[owner_id] = user_cpu_counts.get(owner_id, 0) + 1
+                            user_local_ids[owner_id] = inst.user_id
                 
-            self._last_scale_up = now
-            log.info("Scaled UP — created VM '%s' (one_vm_id=%d) for user_id=%s", name, one_vm_id, target_user_id)
+                busiest_owner_id = None
+                highest_avg_cpu = -1.0
+                for owner_id, cpu_sum in user_cpu_sums.items():
+                    avg = cpu_sum / user_cpu_counts[owner_id]
+                    if avg > highest_avg_cpu:
+                        highest_avg_cpu = avg
+                        busiest_owner_id = owner_id
+                
+                if busiest_owner_id is not None:
+                    target_user_id = busiest_owner_id
+                    local_user_id = user_local_ids[busiest_owner_id]
+                else:
+                    # Fallback to the most recently active user
+                    from api.auth.models import User
+                    newest_active_user = db.query(User).filter(User.one_user_id != None).order_by(User.last_active_at.desc()).first()
+                    if newest_active_user:
+                        target_user_id = newest_active_user.one_user_id
+                        local_user_id = newest_active_user.id
+            except Exception as e:
+                log.error("Error determining target user for autoscale: %s", e)
+            finally:
+                db.close()
+            
+            if target_user_id is not None:
+                one_vm_id = create_vm(name, sla.DEFAULT_TEMPLATE_ID, user_id=target_user_id)
+                db = SessionLocal()
+                try:
+                    new_inst = VMInstance(
+                        user_id=local_user_id,
+                        one_vm_id=one_vm_id,
+                        name=name,
+                        template_id=sla.DEFAULT_TEMPLATE_ID
+                    )
+                    db.add(new_inst)
+                    db.commit()
+                except Exception as e:
+                    log.error("Failed to save autoscaled VMInstance to DB: %s", e)
+                finally:
+                    db.close()
+                    
+                self._last_scale_up = now
+                log.info("Scaled UP — created VM '%s' (one_vm_id=%d) for user_id=%s", name, one_vm_id, target_user_id)
+            else:
+                log.warning("Scale UP failed: No active/fallback user found to assign the new VM.")
             return
 
         # Scale DOWN — only consider autoscaler-managed VMs (never touch user VMs)
@@ -183,12 +224,24 @@ class AutoScaler:
                 if vm["cpu_usage_pct"] < sla.SCALE_DOWN_CPU_PCT:
                     if vid not in _idle_since:
                         _idle_since[vid] = now
-                    # Testing window: 60 seconds of idle instead of 300
-                    elif (now - _idle_since[vid]).total_seconds() >= 300:
+                    elif (now - _idle_since[vid]).total_seconds() >= sla.SCALE_DOWN_WINDOW_SEC:
                         destroy_vm(vid)
                         _idle_since.pop(vid, None)
                         self._last_scale_down = now
-                        log.info("Scaled DOWN — destroyed autoscale VM one_vm_id=%d (idle >300s)", vid)
+                        
+                        # Update DB record to mark VM as terminated
+                        db = SessionLocal()
+                        try:
+                            inst = db.query(VMInstance).filter(VMInstance.one_vm_id == vid).first()
+                            if inst:
+                                inst.terminated_at = now
+                                db.commit()
+                        except Exception as e:
+                            log.error("Failed to mark autoscale VM as terminated in DB: %s", e)
+                        finally:
+                            db.close()
+
+                        log.info("Scaled DOWN — destroyed autoscale VM one_vm_id=%d (idle >%ds)", vid, sla.SCALE_DOWN_WINDOW_SEC)
                         return
                 else:
                     _idle_since.pop(vid, None)
