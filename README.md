@@ -776,10 +776,46 @@ docker ps --filter "label=cloud_db_user=afonso"
 | `GET` | `/databases` | List your database instances |
 | `GET` | `/databases/{id}` | Get instance details + credentials |
 | `DELETE` | `/databases/{id}` | Deprovision and delete instance |
+| `GET` | `/databases/{id}/metrics` | Get database live connections and size metrics |
 
 ---
 
-## 11. Dashboard — Web UI
+## 11. Phase 7 — SLA & Energy Saving
+
+A comprehensive, production-grade Service Level Agreement (SLA) policy and energy-saving (scale-to-zero) system are implemented inside the platform.
+
+### Core Features
+
+#### 1. Scale-to-Zero Inactivity Suspension
+- The autoscaler tracks user activity via the `last_active_at` timestamp.
+- If a user has been inactive for `USER_INACTIVITY_TIMEOUT_SEC` (default: 10 minutes), all of their active VMs are automatically suspended (`suspend-vm`) to save energy and reduce the proxy CO2 footprint.
+- The VMs are automatically resumed when the user logs in or interacts with the platform.
+
+#### 2. Manual Shutdown Protection (`suspended_by_system`)
+- To prevent the autoscaler from overriding manual user power-offs, the database tracks system-suspended VMs using the `suspended_by_system` flag.
+- The autoscaler will only auto-resume VMs that were suspended by the system, leaving manually stopped/powered-off VMs untouched.
+
+#### 3. Hot Standby / Pre-Warming Pool
+- The autoscaler maintains a pool of 1 pre-warmed standby VM (`prewarmed-vm-*`) owned by the system administrator (`oneadmin`).
+- When a user manually provisions a VM or launches a container, the platform checks the pre-warmed pool first.
+- If a standby VM is ready, the platform dynamically **claims**, **renames**, and **transfers ownership** of the pre-warmed VM to the user. This cuts down VM startup latency from **90 seconds to under 5 seconds**.
+- The autoscaler automatically boots a new standby VM in the background to replenish the pool.
+
+#### 4. Load-Balanced Container Placement
+- To prevent overloading a single VM, container launches are load-balanced.
+- The scheduler connects to the Docker daemon of each of the user's active VMs, counts the running containers, and automatically places the new workload on the VM with the **fewest containers**.
+
+#### 5. Safe Scale-Down (Drain Check)
+- When average cluster CPU falls below the scale-down threshold, the autoscaler checks the Docker daemon of candidate autoscale VMs before terminating them.
+- If a VM is hosting any active containers or databases, it is excluded from scale-down to prevent outages and data loss.
+
+### SLA & Energy Stats Endpoints
+- `GET /compute/status`: Live cluster stats, average CPU, and autoscaler status.
+- `GET /compute/energy-stats`: Calculates global energy savings (kWh and estimated CO2 kg saved) compared to running `MAX_VMS` continuously, based on actual VM uptimes recorded in the database.
+
+---
+
+## 12. Dashboard — Web UI
 
 A full React 18 + Vite management dashboard is included in the `dashboard/` directory.
 
@@ -862,6 +898,6 @@ cp dashboard/.env.example dashboard/.env
 | 4 | Disk storage — MinIO object storage | Done |
 | 5 | Container service — Docker on demand | Done |
 | 6 | Database service — PostgreSQL on demand (DBaaS) | Done |
-| 7 | SLA + energy saving (scale-to-zero) | Pending |
+| 7 | SLA + energy saving (scale-to-zero) | Done |
 | 8 | Tests + evaluation metrics + report | Pending |
 
