@@ -21,6 +21,7 @@ class VMResponse(BaseModel):
     ip_address: str
     cpu_usage_pct: float
     memory_mb: float
+    disk_gb: float
     created_at: datetime
 
     class Config:

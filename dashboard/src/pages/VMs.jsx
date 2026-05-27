@@ -120,6 +120,7 @@ function VMDetailDrawer({ vm, onClose }) {
             </div>
             <Field label="CPU Usage" value={vm.cpu_usage_pct != null ? `${vm.cpu_usage_pct.toFixed(1)}%` : '—'} />
             <Field label="Memory (MB)" value={vm.memory_mb ?? '—'} />
+            <Field label="Storage" value={vm.disk_gb != null ? `${vm.disk_gb} GB` : '—'} />
           </div>
 
           <VMMetricsGraph vmId={vm.id} />
@@ -159,6 +160,7 @@ export default function VMs() {
     name: '',
     cpu: '',
     memory_mb: '',
+    disk_gb: '',
     user_data: ''
   })
 
@@ -170,12 +172,13 @@ export default function VMs() {
         name: launchForm.name || undefined,
         cpu: launchForm.cpu ? parseFloat(launchForm.cpu) : undefined,
         memory_mb: launchForm.memory_mb ? parseInt(launchForm.memory_mb, 10) : undefined,
+        disk_gb: launchForm.disk_gb ? parseInt(launchForm.disk_gb, 10) : undefined,
         user_data: launchForm.user_data || undefined
       },
       {
         onSuccess: () => {
           setShowLaunchModal(false)
-          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', user_data: '' })
+          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', disk_gb: '', user_data: '' })
         },
       }
     )
@@ -332,7 +335,7 @@ export default function VMs() {
         isOpen={showLaunchModal} 
         onClose={() => { 
           setShowLaunchModal(false); 
-          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', user_data: '' }) 
+          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', disk_gb: '', user_data: '' }) 
         }} 
         title="Launch Virtual Machine"
       >
@@ -362,7 +365,7 @@ export default function VMs() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-1.5">CPU Override</label>
               <input
@@ -386,6 +389,17 @@ export default function VMs() {
                 className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
               />
             </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Storage (GB)</label>
+              <input
+                type="number"
+                value={launchForm.disk_gb}
+                onChange={(e) => setLaunchForm({ ...launchForm, disk_gb: e.target.value })}
+                placeholder="2"
+                min="1"
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+              />
+            </div>
           </div>
 
           <div>
@@ -402,7 +416,7 @@ export default function VMs() {
           <div className="flex gap-3 pt-4 sticky bottom-0 bg-slate-900 pb-2">
             <button
               type="button"
-              onClick={() => { setShowLaunchModal(false); setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', user_data: '' }) }}
+              onClick={() => { setShowLaunchModal(false); setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', disk_gb: '', user_data: '' }) }}
               className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors"
             >
               Cancel

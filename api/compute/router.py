@@ -20,9 +20,9 @@ def _build_vm_response(instance: VMInstance) -> dict:
     try:
         live = get_vm(instance.one_vm_id)
     except pyone.OneNoExistsException:
-        live = {"state": "DONE", "cpu_usage_pct": 0.0, "memory_mb": 0.0}
+        live = {"state": "DONE", "cpu_usage_pct": 0.0, "memory_mb": 0.0, "disk_gb": 2.0}
     except Exception:
-        live = {"state": "UNREACHABLE", "cpu_usage_pct": 0.0, "memory_mb": 0.0}
+        live = {"state": "UNREACHABLE", "cpu_usage_pct": 0.0, "memory_mb": 0.0, "disk_gb": 2.0}
 
     return {
         "id": instance.id,
@@ -34,6 +34,7 @@ def _build_vm_response(instance: VMInstance) -> dict:
         "ip_address": live.get("ip_address", "—"),
         "cpu_usage_pct": live["cpu_usage_pct"],
         "memory_mb": live["memory_mb"],
+        "disk_gb": live.get("disk_gb", 2.0),
     }
 
 
