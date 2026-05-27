@@ -6,6 +6,7 @@ from api.containers.schemas import ContainerCreate, ContainerResponse
 from api.containers.docker_client import (
     launch_container, list_containers, get_container,
     start_container, stop_container, remove_container,
+    get_container_logs, get_container_stats,
 )
 
 router = APIRouter(prefix="/containers", tags=["containers"])
@@ -84,3 +85,30 @@ def remove(container_id: str, current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to remove container: {e}")
+
+
+# GET /containers/{container_id}/logs — retrieve container logs
+@router.get("/{container_id}/logs")
+def get_logs(container_id: str, tail: int = 100, current_user: User = Depends(get_current_user)):
+    try:
+        logs_str = get_container_logs(current_user.username, container_id, tail)
+        return {"logs": logs_str}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch logs: {e}")
+
+
+# GET /containers/{container_id}/stats — retrieve container resource statistics
+@router.get("/{container_id}/stats")
+def get_stats(container_id: str, current_user: User = Depends(get_current_user)):
+    try:
+        return get_container_stats(current_user.username, container_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch stats: {e}")

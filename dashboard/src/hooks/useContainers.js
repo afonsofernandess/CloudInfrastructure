@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { listContainers, launchContainer, startContainer, stopContainer, removeContainer } from '../api/containers'
+import { listContainers, launchContainer, startContainer, stopContainer, removeContainer, getContainerLogs, getContainerStats } from '../api/containers'
 
 const toastStyle = { style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }
 
@@ -87,5 +87,23 @@ export function useRemoveContainer() {
       if (context?.prev) queryClient.setQueryData(['containers'], context.prev)
       toast.error(err.response?.data?.detail || err.message, toastStyle)
     },
+  })
+}
+
+export function useContainerLogs(id, enabled = false, tail = 100) {
+  return useQuery({
+    queryKey: ['containers', id, 'logs', tail],
+    queryFn: () => getContainerLogs(id, tail),
+    enabled: !!id && enabled,
+    refetchInterval: 3000, // Poll every 3 seconds for live-updating logs
+  })
+}
+
+export function useContainerStats(id, enabled = false) {
+  return useQuery({
+    queryKey: ['containers', id, 'stats'],
+    queryFn: () => getContainerStats(id),
+    enabled: !!id && enabled,
+    refetchInterval: 5000, // Poll every 5 seconds for live stats
   })
 }
