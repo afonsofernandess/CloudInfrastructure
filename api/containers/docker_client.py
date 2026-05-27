@@ -619,6 +619,72 @@ def get_container_logs(username: str, container_id: str, tail: int = 100) -> str
     raise FileNotFoundError(f"Container '{container_id}' not found")
 
 
+def get_container_stats(username: str, container_id: str) -> dict:
+    """Get CPU/RAM usage statistics for a container."""
+    clients = get_all_clients(username)
+    for vm_id, client in clients:
+        try:
+            container = client.containers.get(container_id)
+            if container.labels.get(LABEL_KEY) != username:
+                raise PermissionError("Container does not belong to this user")
+            
+            # Fetch single stats snapshot
+            stats = container.stats(stream=False)
+            
+            # 1. Calculate Memory stats
+            mem_stats = stats.get('memory_stats', {})
+            mem_usage = mem_stats.get('usage', 0)
+            mem_limit = mem_stats.get('limit', 0)
+            
+            # Convert to MB
+            mem_mb = round(mem_usage / (1024 * 1024), 1)
+            mem_limit_mb = round(mem_limit / (1024 * 1024), 1)
+            
+            # 2. Calculate CPU stats
+            cpu_stats = stats.get('cpu_stats', {})
+            precpu_stats = stats.get('precpu_stats', {})
+            
+            cpu_percent = 0.0
+            if cpu_stats and precpu_stats:
+                cpu_total = cpu_stats.get('cpu_usage', {}).get('total_usage', 0)
+                precpu_total = precpu_stats.get('cpu_usage', {}).get('total_usage', 0)
+                
+                system_cpu = cpu_stats.get('system_cpu_usage', 0)
+                pre_system_cpu = precpu_stats.get('system_cpu_usage', 0)
+                
+                cpu_delta = cpu_total - precpu_total
+                system_delta = system_cpu - pre_system_cpu
+                
+                # Get number of cores
+                online_cpus = cpu_stats.get('online_cpus')
+                if not online_cpus:
+                    percpu = cpu_stats.get('cpu_usage', {}).get('percpu_usage')
+                    online_cpus = len(percpu) if percpu else 1
+                
+                if system_delta > 0 and cpu_delta > 0:
+                    cpu_percent = round((cpu_delta / system_delta) * online_cpus * 100.0, 1)
+            
+            return {
+                "cpu_percent": cpu_percent,
+                "memory_mb": mem_mb,
+                "memory_limit_mb": mem_limit_mb,
+                "memory_percent": round((mem_usage / mem_limit) * 100.0, 1) if mem_limit > 0 else 0.0
+            }
+        except NotFound:
+            continue
+        except PermissionError as e:
+            raise e
+        except Exception:
+            continue
+        finally:
+            try:
+                client.close()
+                client.api.adapters.clear()
+            except Exception:
+                pass
+    raise FileNotFoundError(f"Container '{container_id}' not found")
+
+
 def _container_to_dict(container) -> dict:
     container.reload()
     ports = container.ports or {}

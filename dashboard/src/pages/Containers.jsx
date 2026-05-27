@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, Fragment } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Box, Plus, Play, Square, Trash2, LayoutGrid, List, RefreshCw, FileText } from 'lucide-react'
+import { Box, Plus, Play, Square, Trash2, LayoutGrid, List, RefreshCw, FileText, ChevronDown, ChevronUp } from 'lucide-react'
 import toast from 'react-hot-toast'
 import {
   useContainers,
@@ -9,6 +9,7 @@ import {
   useStopContainer,
   useRemoveContainer,
   useContainerLogs,
+  useContainerStats,
 } from '../hooks/useContainers'
 import { useVMs } from '../hooks/useVMs'
 import Modal from '../components/shared/Modal'
@@ -32,7 +33,7 @@ function formatPorts(ports) {
     .join(', ')
 }
 
-function ContainerCard({ container, onStart, onStop, onRemove, onViewLogs, vms }) {
+function ContainerCard({ container, onStart, onStop, onRemove, onViewLogs, isExpanded, onToggleExpand, vms }) {
   const statusClass = containerStatusColor(container.status)
   const hostingVm = vms?.find((v) => v.id === container.vm_id)
   const vmLabel = hostingVm
@@ -43,7 +44,14 @@ function ContainerCard({ container, onStart, onStop, onRemove, onViewLogs, vms }
     <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 flex flex-col gap-3">
       <div className="flex items-start justify-between">
         <div>
-          <div className="font-semibold text-slate-100">{container.name}</div>
+          <button
+            type="button"
+            onClick={onToggleExpand}
+            className="font-semibold text-slate-100 hover:text-blue-400 transition-colors flex items-center gap-1 text-left"
+          >
+            {container.name}
+            {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+          </button>
           <div className="text-xs text-slate-400 mt-0.5 font-mono">{container.image}</div>
         </div>
         <span className={clsx('px-2 py-0.5 text-xs font-medium rounded-full', statusClass)}>
@@ -59,6 +67,16 @@ function ContainerCard({ container, onStart, onStop, onRemove, onViewLogs, vms }
         {formatPorts(container.ports)}
       </div>
       <div className="text-xs text-slate-500">{formatDate(container.created)}</div>
+
+      {isExpanded && container.status === 'running' && (
+        <ContainerStatsPanel containerId={container.container_id} />
+      )}
+      {isExpanded && container.status !== 'running' && (
+        <div className="mt-3 py-2 px-3 bg-slate-950/40 rounded-lg border border-slate-800 text-xs text-slate-500 italic text-center">
+          Container is not running.
+        </div>
+      )}
+
       <div className="flex gap-2 mt-auto pt-2 border-t border-slate-700">
         <button
           onClick={() => onStart(container.container_id)}
@@ -187,6 +205,64 @@ function ContainerLogsModal({ container, onClose }) {
   )
 }
 
+function ContainerStatsPanel({ containerId }) {
+  const { data: stats, isLoading, error } = useContainerStats(containerId, true)
+
+  if (isLoading && !stats) {
+    return (
+      <div className="mt-3 py-3 px-4 bg-slate-950/40 rounded-lg border border-slate-800 text-xs text-slate-500 flex items-center justify-center">
+        <RefreshCw className="w-3.5 h-3.5 animate-spin mr-2" />
+        Fetching real-time stats...
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="mt-3 py-2 px-3 bg-slate-950/40 rounded-lg border border-slate-800 text-xs text-red-400">
+        Failed to fetch stats
+      </div>
+    )
+  }
+
+  const cpu = stats?.cpu_percent ?? 0
+  const ram = stats?.memory_mb ?? 0
+  const ramLimit = stats?.memory_limit_mb ?? 2048
+  const ramPct = stats?.memory_percent ?? 0
+
+  return (
+    <div className="mt-3 p-3 bg-slate-950/40 rounded-lg border border-slate-800 space-y-3">
+      <div>
+        <div className="flex justify-between text-xs text-slate-400 mb-1">
+          <span>CPU Usage</span>
+          <span className="font-semibold text-slate-300 font-mono">{cpu.toFixed(1)}%</span>
+        </div>
+        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+          <div
+            className={clsx('h-full rounded-full transition-all duration-500', cpu > 80 ? 'bg-red-500' : cpu > 50 ? 'bg-yellow-500' : 'bg-blue-500')}
+            style={{ width: `${Math.min(100, cpu)}%` }}
+          />
+        </div>
+      </div>
+
+      <div>
+        <div className="flex justify-between text-xs text-slate-400 mb-1">
+          <span>Memory</span>
+          <span className="font-semibold text-slate-300 font-mono">
+            {ram.toFixed(1)} MB / {ramLimit.toFixed(0)} MB ({ramPct.toFixed(1)}%)
+          </span>
+        </div>
+        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+          <div
+            className={clsx('h-full rounded-full transition-all duration-500', ramPct > 80 ? 'bg-red-500' : ramPct > 60 ? 'bg-yellow-500' : 'bg-purple-500')}
+            style={{ width: `${Math.min(100, ramPct)}%` }}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Containers() {
   const { data: containers, isLoading } = useContainers()
   const { data: vms } = useVMs()
@@ -199,6 +275,7 @@ export default function Containers() {
   const [showLaunchModal, setShowLaunchModal] = useState(false)
   const [confirmRemoveId, setConfirmRemoveId] = useState(null)
   const [selectedLogsContainer, setSelectedLogsContainer] = useState(null)
+  const [expandedContainerId, setExpandedContainerId] = useState(null)
   const queryClient = useQueryClient()
 
   // Time-based stepper: track when launch started and auto-advance stages
@@ -399,6 +476,8 @@ export default function Containers() {
               onStop={(id) => stop.mutate(id)}
               onRemove={(id) => setConfirmRemoveId(id)}
               onViewLogs={(c) => setSelectedLogsContainer(c)}
+              isExpanded={expandedContainerId === c.container_id}
+              onToggleExpand={() => setExpandedContainerId(expandedContainerId === c.container_id ? null : c.container_id)}
             />
           ))}
         </div>
@@ -423,53 +502,80 @@ export default function Containers() {
                   const vmLabel = hostingVm
                     ? `${hostingVm.name || `VM #${hostingVm.id}`} (${hostingVm.ip_address})`
                     : `VM #${c.vm_id || '—'}`
+                  const isExpanded = expandedContainerId === c.container_id
                   return (
-                    <tr key={c.container_id} className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
-                      <td className="px-4 py-3 text-slate-100 font-medium">{c.name}</td>
-                      <td className="px-4 py-3 text-slate-400 font-mono text-xs">{c.image}</td>
-                      <td className="px-4 py-3 text-blue-400 text-xs font-semibold">{vmLabel}</td>
-                      <td className="px-4 py-3">
-                        <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', containerStatusColor(c.status))}>
-                          {c.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-slate-400 text-xs">{formatPorts(c.ports)}</td>
-                      <td className="px-4 py-3 text-slate-400">{formatDate(c.created)}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-1">
+                    <Fragment key={c.container_id}>
+                      <tr className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
+                        <td className="px-4 py-3">
                           <button
-                            onClick={() => start.mutate(c.container_id)}
-                            disabled={c.status === 'running'}
-                            className="p-1.5 rounded text-green-400 hover:bg-green-500/10 disabled:opacity-40 transition-colors"
-                            title="Start"
+                            type="button"
+                            onClick={() => setExpandedContainerId(isExpanded ? null : c.container_id)}
+                            className="text-slate-100 font-medium hover:text-blue-400 transition-colors flex items-center gap-1 text-left font-outfit"
                           >
-                            <Play className="w-3.5 h-3.5" />
+                            {c.name}
+                            {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
                           </button>
-                          <button
-                            onClick={() => stop.mutate(c.container_id)}
-                            disabled={c.status !== 'running'}
-                            className="p-1.5 rounded text-yellow-400 hover:bg-yellow-500/10 disabled:opacity-40 transition-colors"
-                            title="Stop"
-                          >
-                            <Square className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => setSelectedLogsContainer(c)}
-                            className="p-1.5 rounded text-slate-400 hover:bg-slate-800 hover:text-slate-100 transition-colors"
-                            title="View Logs"
-                          >
-                            <FileText className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => setConfirmRemoveId(c.container_id)}
-                            className="p-1.5 rounded text-red-400 hover:bg-red-500/10 transition-colors"
-                            title="Remove"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
+                        </td>
+                        <td className="px-4 py-3 text-slate-400 font-mono text-xs">{c.image}</td>
+                        <td className="px-4 py-3 text-blue-400 text-xs font-semibold">{vmLabel}</td>
+                        <td className="px-4 py-3">
+                          <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', containerStatusColor(c.status))}>
+                            {c.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-slate-400 text-xs">{formatPorts(c.ports)}</td>
+                        <td className="px-4 py-3 text-slate-400">{formatDate(c.created)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => start.mutate(c.container_id)}
+                              disabled={c.status === 'running'}
+                              className="p-1.5 rounded text-green-400 hover:bg-green-500/10 disabled:opacity-40 transition-colors"
+                              title="Start"
+                            >
+                              <Play className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => stop.mutate(c.container_id)}
+                              disabled={c.status !== 'running'}
+                              className="p-1.5 rounded text-yellow-400 hover:bg-yellow-500/10 disabled:opacity-40 transition-colors"
+                              title="Stop"
+                            >
+                              <Square className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => setSelectedLogsContainer(c)}
+                              className="p-1.5 rounded text-slate-400 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+                              title="View Logs"
+                            >
+                              <FileText className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => setConfirmRemoveId(c.container_id)}
+                              className="p-1.5 rounded text-red-400 hover:bg-red-500/10 transition-colors"
+                              title="Remove"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-slate-900/30 border-b border-slate-700">
+                          <td colSpan={7} className="px-6 py-3">
+                            <div className="max-w-md">
+                              {c.status === 'running' ? (
+                                <ContainerStatsPanel containerId={c.container_id} />
+                              ) : (
+                                <div className="py-2 px-3 bg-slate-950/40 rounded-lg border border-slate-800 text-xs text-slate-500 italic text-center">
+                                  Container is not running.
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   )
                 })}
               </tbody>

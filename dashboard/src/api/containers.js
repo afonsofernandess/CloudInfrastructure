@@ -33,3 +33,8 @@ export async function getContainerLogs(id, tail = 100) {
   const res = await client.get(`/containers/${id}/logs`, { params: { tail } })
   return res.data
 }
+
+export async function getContainerStats(id) {
+  const res = await client.get(`/containers/${id}/stats`)
+  return res.data
+}
