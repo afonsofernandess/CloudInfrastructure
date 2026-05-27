@@ -20,6 +20,15 @@ import api.database_service.models
 async def lifespan(app: FastAPI):
     # Startup: create DB tables and start the autoscaler background thread
     Base.metadata.create_all(bind=engine)
+    
+    # Run a self-healing migration for SQLite to add the suspended_by_system column if it doesn't exist
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE vm_instances ADD COLUMN suspended_by_system BOOLEAN DEFAULT 0"))
+    except Exception:
+        pass
+
     autoscaler.start()
     yield
     # Shutdown: stop the autoscaler
