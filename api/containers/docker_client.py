@@ -247,6 +247,7 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
                             # Count all containers on the host as a load metric
                             count = len(cli.containers.list(all=True))
                             cli.close()
+                            cli.api.adapters.clear()
                             
                             if count < min_containers:
                                 min_containers = count
@@ -367,6 +368,7 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
                         if test_client:
                             try:
                                 test_client.close()
+                                test_client.api.adapters.clear()
                             except:
                                 pass
             print(f"DEBUG: Waiting for VM '{target_inst.name}' to boot... State={live['state']}, LCM={live['lcm_state']} (attempt {attempt+1}/{max_attempts})")
@@ -435,6 +437,7 @@ def launch_container(
     finally:
         try:
             client.close()
+            client.api.adapters.clear()
         except Exception:
             pass
 
@@ -458,6 +461,7 @@ def list_containers(username: str) -> list[dict]:
         finally:
             try:
                 client.close()
+                client.api.adapters.clear()
             except Exception:
                 pass
     return all_containers
@@ -480,6 +484,7 @@ def get_container(username: str, container_id: str) -> dict:
         finally:
             try:
                 client.close()
+                client.api.adapters.clear()
             except Exception:
                 pass
     raise FileNotFoundError(f"Container '{container_id}' not found on any active VMs")
@@ -509,6 +514,7 @@ def start_container(username: str, container_id: str) -> dict:
         finally:
             try:
                 client.close()
+                client.api.adapters.clear()
             except Exception:
                 pass
     raise FileNotFoundError(f"Container '{container_id}' not found")
@@ -532,6 +538,7 @@ def stop_container(username: str, container_id: str) -> dict:
         finally:
             try:
                 client.close()
+                client.api.adapters.clear()
             except Exception:
                 pass
     raise FileNotFoundError(f"Container '{container_id}' not found")
@@ -552,6 +559,7 @@ def remove_container(username: str, container_id: str) -> None:
         finally:
             try:
                 client.close()
+                client.api.adapters.clear()
             except Exception:
                 pass
     raise FileNotFoundError(f"Container '{container_id}' not found")

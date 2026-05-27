@@ -97,6 +97,7 @@ def list_instances(
             if client:
                 try:
                     client.close()
+                    client.api.adapters.clear()
                 except Exception:
                     pass
     return result
@@ -127,6 +128,7 @@ def get_instance(
         if client:
             try:
                 client.close()
+                client.api.adapters.clear()
             except Exception:
                 pass
 

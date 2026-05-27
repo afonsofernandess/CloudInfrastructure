@@ -252,6 +252,7 @@ class AutoScaler:
                         if len(containers) > 0:
                             has_containers = True
                         cli.close()
+                        cli.api.adapters.clear()
                     except Exception as e:
                         log.warning("Could not connect to VM %d to check containers: %s", vid, e)
                         has_containers = True  # Safe fallback: do not destroy

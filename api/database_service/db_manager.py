@@ -149,6 +149,7 @@ def provision_db(username: str, instance_name: str, db_name: str, vm_id: Optiona
     finally:
         try:
             client.close()
+            client.api.adapters.clear()
         except Exception:
             pass
 
@@ -183,6 +184,7 @@ def get_db_container_and_client(username: str, container_id: str):
                 pass
         try:
             client.close()
+            client.api.adapters.clear()
         except Exception:
             pass
     return found_client, found_container, found_vm_id
@@ -219,6 +221,7 @@ def get_container_status(username: str, container_id: str) -> str:
         if client:
             try:
                 client.close()
+                client.api.adapters.clear()
             except Exception:
                 pass
 
@@ -244,6 +247,7 @@ def deprovision_db(username: str, container_id: str) -> None:
         if client:
             try:
                 client.close()
+                client.api.adapters.clear()
             except Exception:
                 pass
 
@@ -295,5 +299,6 @@ def get_db_metrics(username: str, container_id: str, db_user: str, db_name: str,
         if client:
             try:
                 client.close()
+                client.api.adapters.clear()
             except Exception:
                 pass
