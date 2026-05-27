@@ -68,8 +68,8 @@ def get_user_vm_ip(username: str, vm_id: Optional[int] = None) -> str:
 
 
 def _get_client(username: str, vm_id: Optional[int] = None) -> docker.DockerClient:
-    ip = get_user_vm_ip(username, vm_id)
-    return docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True)
+    from api.containers.docker_client import get_client
+    return get_client(username, vm_id)
 
 
 def _random_password(length: int = 24) -> str:
@@ -265,9 +265,23 @@ def get_db_metrics(username: str, container_id: str, db_user: str, db_name: str,
         if not ip or ip == "localhost":
             return {"active_connections": 0, "db_size": "0 kB", "timestamp": datetime.now(timezone.utc).isoformat(), "error": "Could not resolve VM IP"}
 
+        # Get SSH user for the VM
+        from api.database import SessionLocal
+        from api.compute.models import VMInstance
+        from opennebula.vm_manager import get_ssh_user_by_template
+        
+        db_sess = SessionLocal()
+        ssh_user = "root"
+        try:
+            inst = db_sess.query(VMInstance).filter(VMInstance.id == vm_id).first()
+            if inst:
+                ssh_user = get_ssh_user_by_template(inst.template_id)
+        finally:
+            db_sess.close()
+
         # Query 1: Active connections
         cmd_connections = [
-            "ssh", "-o", "StrictHostKeyChecking=no", f"root@{ip}",
+            "ssh", "-o", "StrictHostKeyChecking=no", f"{ssh_user}@{ip}",
             f"docker exec -e PGPASSWORD={db_password} {container.name} psql -U {db_user} -d {db_name} -t -c \"SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend';\""
         ]
         res_conn = subprocess.run(cmd_connections, capture_output=True, text=True, timeout=5)
@@ -280,7 +294,7 @@ def get_db_metrics(username: str, container_id: str, db_user: str, db_name: str,
 
         # Query 2: Database size
         cmd_size = [
-            "ssh", "-o", "StrictHostKeyChecking=no", f"root@{ip}",
+            "ssh", "-o", "StrictHostKeyChecking=no", f"{ssh_user}@{ip}",
             f"docker exec -e PGPASSWORD={db_password} {container.name} psql -U {db_user} -d {db_name} -t -c \"SELECT pg_size_pretty(pg_database_size('{db_name}'));\""
         ]
         res_size = subprocess.run(cmd_size, capture_output=True, text=True, timeout=5)

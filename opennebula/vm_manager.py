@@ -72,25 +72,62 @@ def create_vm(
     else:
         context.append('SSH_PUBLIC_KEY = "$USER[SSH_PUBLIC_KEY]"')
 
-    docker_setup = (
-        'echo "nameserver 8.8.8.8" > /etc/resolv.conf\n'
-        '# Wait up to 30 seconds for internet connectivity\n'
-        'i=0\n'
-        'while [ $i -lt 30 ]; do\n'
-        '  if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then\n'
-        '    break\n'
-        '  fi\n'
-        '  sleep 1\n'
-        '  i=$((i+1))\n'
-        'done\n'
-        '# Install docker with retries\n'
-        'for r in 1 2 3; do\n'
-        '  apk update && apk add docker && break\n'
-        '  sleep 5\n'
-        'done\n'
-        'rc-update add docker default\n'
-        '(sleep 10 && service docker start) &\n'
-    )
+    # Detect OS from template name to install Docker using the correct package manager
+    is_ubuntu = False
+    try:
+        client = get_client()
+        template_info = client.template.info(template_id)
+        template_name = str(getattr(template_info, "NAME", "")).lower()
+        if "ubuntu" in template_name:
+            is_ubuntu = True
+    except Exception as e:
+        print(f"DEBUG: Could not check template OS, defaulting to Alpine: {e}")
+
+    if is_ubuntu:
+        docker_setup = (
+            'rm -f /etc/resolv.conf\n'
+            'echo "nameserver 8.8.8.8" > /etc/resolv.conf\n'
+            'echo "nameserver 1.1.1.1" >> /etc/resolv.conf\n'
+            '# Wait up to 30 seconds for internet connectivity\n'
+            'i=0\n'
+            'while [ $i -lt 30 ]; do\n'
+            '  if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then\n'
+            '    break\n'
+            '  fi\n'
+            '  sleep 1\n'
+            '  i=$((i+1))\n'
+            'done\n'
+            '# Install docker on Ubuntu with retries\n'
+            'for r in 1 2 3; do\n'
+            '  apt-get update -y && apt-get install -y docker.io && break\n'
+            '  sleep 5\n'
+            'done\n'
+            'systemctl enable docker\n'
+            'systemctl start docker\n'
+            'usermod -aG docker ubuntu || true\n'
+        )
+    else:
+        docker_setup = (
+            'rm -f /etc/resolv.conf\n'
+            'echo "nameserver 8.8.8.8" > /etc/resolv.conf\n'
+            'echo "nameserver 1.1.1.1" >> /etc/resolv.conf\n'
+            '# Wait up to 30 seconds for internet connectivity\n'
+            'i=0\n'
+            'while [ $i -lt 30 ]; do\n'
+            '  if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then\n'
+            '    break\n'
+            '  fi\n'
+            '  sleep 1\n'
+            '  i=$((i+1))\n'
+            'done\n'
+            '# Install docker on Alpine with retries\n'
+            'for r in 1 2 3; do\n'
+            '  apk update && apk add docker && break\n'
+            '  sleep 5\n'
+            'done\n'
+            'rc-update add docker default\n'
+            '(sleep 10 && service docker start) &\n'
+        )
     if user_data:
         full_user_data = docker_setup + user_data
     else:
@@ -103,9 +140,10 @@ def create_vm(
     if context:
         overrides.append("CONTEXT = [ " + " , ".join(context) + " ]")
 
-    # Ensure root disk is expanded to the requested size (or fallback to 2048 MB)
-    disk_size_mb = (disk_gb * 1024) if disk_gb else 2048
-    overrides.append(f'DISK = [ IMAGE_ID = "0", SIZE = "{disk_size_mb}" ]')
+    # Override root disk size if custom disk_gb is requested
+    if disk_gb:
+        disk_size_mb = disk_gb * 1024
+        overrides.append(f'DISK = [ SIZE = "{disk_size_mb}" ]')
 
     extra_config = "\n".join(overrides)
 
@@ -253,3 +291,29 @@ def list_templates() -> list[dict]:
         
     # Fallback to local hardcoded mapping
     return [{"id": k, "name": v} for k, v in TEMPLATES.items()]
+
+
+_TEMPLATE_USER_CACHE = {}
+
+def get_ssh_user_by_template(template_id: int) -> str:
+    """Return the default SSH user for a template ID (cached)."""
+    if template_id == 0:
+        return "root"
+    if template_id in _TEMPLATE_USER_CACHE:
+        return _TEMPLATE_USER_CACHE[template_id]
+        
+    user = "root"
+    try:
+        client = get_client()
+        template_info = client.template.info(template_id)
+        name = str(getattr(template_info, "NAME", "")).lower()
+        if "ubuntu" in name:
+            user = "ubuntu"
+        elif "debian" in name:
+            user = "debian"
+        elif "centos" in name:
+            user = "centos"
+        _TEMPLATE_USER_CACHE[template_id] = user
+    except Exception as e:
+        print(f"DEBUG: Could not check SSH user for template {template_id}, default to root: {e}")
+    return user

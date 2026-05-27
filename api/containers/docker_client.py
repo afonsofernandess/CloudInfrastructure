@@ -11,7 +11,7 @@ from typing import Optional
 LABEL_KEY = "cloud_user"
 
 
-def self_heal_docker(ip: str):
+def self_heal_docker(ip: str, ssh_user: str = "root") -> None:
     """Attempt to install or start Docker over SSH as a safety net/self-healing fallback."""
     import os
     import paramiko
@@ -47,38 +47,59 @@ def self_heal_docker(ip: str):
             os.path.join(home, ".ssh", "id_dsa"),
         ]
         
-        print(f"DEBUG [Self-Heal]: Connecting to VM {ip} via tunnel...")
+        print(f"DEBUG [Self-Heal]: Connecting to VM {ip} via tunnel as user '{ssh_user}'...")
         vm_client.connect(
             ip,
-            username="root",
+            username=ssh_user,
             sock=vm_channel,
             timeout=10,
             key_filename=[k for k in possible_keys if os.path.exists(k)],
             allow_agent=True
         )
         
-        # Check if docker daemon is running
-        stdin, stdout, stderr = vm_client.exec_command("service docker status")
-        status_out = stdout.read().decode().strip()
-        
-        if "started" not in status_out:
-            print(f"DEBUG [Self-Heal]: Docker not started on {ip}. Status: '{status_out}'. Attempting to start...")
+        if ssh_user == "ubuntu":
+            # Check if docker daemon is running on Ubuntu
+            stdin, stdout, stderr = vm_client.exec_command("systemctl is-active docker")
+            is_active = stdout.read().decode().strip() == "active"
             
-            # Check if docker binary exists
-            stdin, stdout, stderr = vm_client.exec_command("which docker")
-            has_docker = bool(stdout.read().decode().strip())
-            
-            if not has_docker:
-                print(f"DEBUG [Self-Heal]: Docker binary not found on {ip}. Installing...")
-                vm_client.exec_command("echo 'nameserver 8.8.8.8' > /etc/resolv.conf")
-                # Run installation commands
-                stdin, stdout, stderr = vm_client.exec_command("apk update && apk add docker && rc-update add docker default && service docker start")
-                print(f"DEBUG [Self-Heal]: Installation output: {stdout.read().decode()} | Errors: {stderr.read().decode()}")
+            if not is_active:
+                print(f"DEBUG [Self-Heal]: Docker not started on Ubuntu VM {ip}. Attempting to start...")
+                stdin, stdout, stderr = vm_client.exec_command("which docker")
+                has_docker = bool(stdout.read().decode().strip())
+                
+                if not has_docker:
+                    print(f"DEBUG [Self-Heal]: Docker not installed on Ubuntu {ip}. Installing...")
+                    vm_client.exec_command("sudo rm -f /etc/resolv.conf && sudo sh -c 'echo \"nameserver 8.8.8.8\" > /etc/resolv.conf' && sudo sh -c 'echo \"nameserver 1.1.1.1\" >> /etc/resolv.conf'")
+                    stdin, stdout, stderr = vm_client.exec_command("sudo apt-get update -y && sudo apt-get install -y docker.io && sudo systemctl enable docker && sudo systemctl start docker && sudo usermod -aG docker ubuntu")
+                    stdout.read() # wait for execution
+                else:
+                    stdin, stdout, stderr = vm_client.exec_command("sudo systemctl start docker")
+                    stdout.read()
             else:
-                stdin, stdout, stderr = vm_client.exec_command("service docker start")
-                print(f"DEBUG [Self-Heal]: Service start output: {stdout.read().decode()} | Errors: {stderr.read().decode()}")
+                print(f"DEBUG [Self-Heal]: Docker is already reported as active on Ubuntu VM {ip}.")
         else:
-            print(f"DEBUG [Self-Heal]: Docker is already reported as started on {ip}.")
+            # Check if docker daemon is running on Alpine (root)
+            stdin, stdout, stderr = vm_client.exec_command("service docker status")
+            status_out = stdout.read().decode().strip()
+            
+            if "started" not in status_out:
+                print(f"DEBUG [Self-Heal]: Docker not started on Alpine VM {ip}. Status: '{status_out}'. Attempting to start...")
+                
+                # Check if docker binary exists
+                stdin, stdout, stderr = vm_client.exec_command("which docker")
+                has_docker = bool(stdout.read().decode().strip())
+                
+                if not has_docker:
+                    print(f"DEBUG [Self-Heal]: Docker binary not found on Alpine {ip}. Installing...")
+                    vm_client.exec_command("rm -f /etc/resolv.conf && echo 'nameserver 8.8.8.8' > /etc/resolv.conf && echo 'nameserver 1.1.1.1' >> /etc/resolv.conf")
+                    # Run installation commands
+                    stdin, stdout, stderr = vm_client.exec_command("apk update && apk add docker && rc-update add docker default && service docker start")
+                    stdout.read() # wait for execution
+                else:
+                    stdin, stdout, stderr = vm_client.exec_command("service docker start")
+                    stdout.read()
+            else:
+                print(f"DEBUG [Self-Heal]: Docker is already reported as started on Alpine VM {ip}.")
     except Exception as e:
         print(f"DEBUG [Self-Heal]: Self-healing failed for {ip}: {e}")
     finally:
@@ -124,7 +145,9 @@ def get_client(username: str, vm_id: Optional[int] = None) -> docker.DockerClien
                 if live["state"] == "ACTIVE" and live["lcm_state"] == 3: # 3 = RUNNING
                     ip = live.get("ip_address")
                     if ip and ip != "—":
-                        return docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True)
+                        from opennebula.vm_manager import get_ssh_user_by_template
+                        ssh_user = get_ssh_user_by_template(inst.template_id)
+                        return docker.DockerClient(base_url=f"ssh://{ssh_user}@{ip}", use_ssh_client=True)
             except Exception:
                 continue
 
@@ -141,7 +164,7 @@ def get_all_clients(username: str) -> list[tuple[int, docker.DockerClient]]:
     from api.database import SessionLocal
     from api.auth.models import User
     from api.compute.models import VMInstance
-    from opennebula.vm_manager import get_vm
+    from opennebula.vm_manager import get_vm, get_ssh_user_by_template
 
     db = SessionLocal()
     clients = []
@@ -159,7 +182,8 @@ def get_all_clients(username: str) -> list[tuple[int, docker.DockerClient]]:
                 if live["state"] == "ACTIVE" and live["lcm_state"] == 3:
                     ip = live.get("ip_address")
                     if ip and ip != "—":
-                        cli = docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True)
+                        ssh_user = get_ssh_user_by_template(inst.template_id)
+                        cli = docker.DockerClient(base_url=f"ssh://{ssh_user}@{ip}", use_ssh_client=True)
                         clients.append((inst.id, cli))
             except Exception:
                 continue
@@ -243,7 +267,9 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
                     if ip and ip != "—":
                         try:
                             import docker
-                            cli = docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True, timeout=3)
+                            from opennebula.vm_manager import get_ssh_user_by_template
+                            ssh_user = get_ssh_user_by_template(inst.template_id)
+                            cli = docker.DockerClient(base_url=f"ssh://{ssh_user}@{ip}", use_ssh_client=True, timeout=3)
                             # Count all containers on the host as a load metric
                             count = len(cli.containers.list(all=True))
                             cli.close()
@@ -354,7 +380,9 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
                     test_client = None
                     try:
                         import docker
-                        test_client = docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True, timeout=5)
+                        from opennebula.vm_manager import get_ssh_user_by_template
+                        ssh_user = get_ssh_user_by_template(target_inst.template_id)
+                        test_client = docker.DockerClient(base_url=f"ssh://{ssh_user}@{ip}", use_ssh_client=True, timeout=5)
                         if test_client.ping():
                             print(f"DEBUG: VM '{target_inst.name}' is fully RUNNING and Docker is reachable at IP {ip}.")
                             return target_inst.id

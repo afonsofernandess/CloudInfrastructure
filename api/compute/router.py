@@ -59,9 +59,9 @@ def provision_vm(
 
     name = data.name or f"vm-user{current_user.id}-{int(datetime.now(timezone.utc).timestamp())}"
 
-    # Pre-warming optimization: only claim a pre-warmed VM if no overrides (CPU, memory, disk, or user_data) are requested
+    # Pre-warming optimization: only claim a pre-warmed VM if no overrides (CPU, memory, disk, or user_data) are requested AND the template is the default Alpine template (ID 0)
     prewarmed_vm = None
-    if (data.cpu is None and data.memory_mb is None and data.disk_gb is None and data.user_data is None):
+    if (data.template_id == 0 and data.cpu is None and data.memory_mb is None and data.disk_gb is None and data.user_data is None):
         try:
             from opennebula.vm_manager import list_all_vms
             all_vms = list_all_vms()

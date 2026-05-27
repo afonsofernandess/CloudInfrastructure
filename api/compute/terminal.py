@@ -43,7 +43,31 @@ async def vm_terminal(websocket: WebSocket, vm_ip: str):
         )
         
         # 3. Connect to the VM *through* the tunnel
-        print(f"DEBUG: Connecting to VM {vm_ip} via tunnel...")
+        # Determine the correct SSH user by checking template type
+        ssh_user = "root"
+        try:
+            from api.database import SessionLocal
+            from api.compute.models import VMInstance
+            from opennebula.vm_manager import list_all_vms, get_ssh_user_by_template
+            
+            db_sess = SessionLocal()
+            try:
+                one_vm_id = None
+                for vm in list_all_vms():
+                    if vm.get("ip_address") == vm_ip:
+                        one_vm_id = vm["one_vm_id"]
+                        break
+                
+                if one_vm_id is not None:
+                    inst = db_sess.query(VMInstance).filter(VMInstance.one_vm_id == one_vm_id).first()
+                    if inst:
+                        ssh_user = get_ssh_user_by_template(inst.template_id)
+            finally:
+                db_sess.close()
+        except Exception as e:
+            print(f"DEBUG: Could not automatically detect SSH user for terminal IP {vm_ip}: {e}")
+
+        print(f"DEBUG: Connecting to VM {vm_ip} via tunnel as user '{ssh_user}'...")
         
         # Look for default private keys on your Mac
         home = os.path.expanduser("~")
@@ -55,7 +79,7 @@ async def vm_terminal(websocket: WebSocket, vm_ip: str):
         
         vm_client.connect(
             vm_ip,
-            username="root",
+            username=ssh_user,
             sock=vm_channel,
             timeout=10,
             key_filename=[k for k in possible_keys if os.path.exists(k)],

@@ -247,7 +247,17 @@ class AutoScaler:
                     has_containers = False
                     try:
                         import docker
-                        cli = docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True, timeout=3)
+                        from opennebula.vm_manager import get_ssh_user_by_template
+                        ssh_user = "root"
+                        db_sess = SessionLocal()
+                        try:
+                            inst = db_sess.query(VMInstance).filter(VMInstance.one_vm_id == vid).first()
+                            if inst:
+                                ssh_user = get_ssh_user_by_template(inst.template_id)
+                        finally:
+                            db_sess.close()
+
+                        cli = docker.DockerClient(base_url=f"ssh://{ssh_user}@{ip}", use_ssh_client=True, timeout=3)
                         containers = cli.containers.list(all=True)
                         if len(containers) > 0:
                             has_containers = True
