@@ -11,7 +11,7 @@ def get_cluster_metrics() -> dict:
     Used by the autoscaler and the /compute/status endpoint.
     """
     all_vms = list_all_vms()
-    active_vms = [vm for vm in all_vms if vm["state"] == "ACTIVE"]
+    active_vms = [vm for vm in all_vms if vm["state"] == "ACTIVE" and vm.get("lcm_state") == 3]
 
     if not active_vms:
         return {
