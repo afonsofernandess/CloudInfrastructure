@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Server, Plus, RefreshCw, Trash2, ChevronRight, X, Terminal as TerminalIcon } from 'lucide-react'
-import { useVMs, useCreateVM, useDestroyVM } from '../hooks/useVMs'
+import { useVMs, useCreateVM, useDestroyVM, useTemplates } from '../hooks/useVMs'
 import { useClusterStatus } from '../hooks/useClusterStatus'
 import Modal from '../components/shared/Modal'
 import VMTerminal from '../components/VMTerminal'
@@ -153,6 +153,7 @@ function Field({ label, value }) {
 export default function VMs() {
   const { data: vms, isLoading } = useVMs()
   const { data: cluster } = useClusterStatus()
+  const { data: templates } = useTemplates()
   const createVM = useCreateVM()
   const destroyVM = useDestroyVM()
 
@@ -169,6 +170,13 @@ export default function VMs() {
     user_data: ''
   })
 
+  // Pre-select first template when templates load
+  useEffect(() => {
+    if (templates && templates.length > 0 && !launchForm.template_id) {
+      setLaunchForm(prev => ({ ...prev, template_id: String(templates[0].id) }))
+    }
+  }, [templates])
+
   const handleLaunch = (e) => {
     e.preventDefault()
     createVM.mutate(
@@ -183,7 +191,14 @@ export default function VMs() {
       {
         onSuccess: () => {
           setShowLaunchModal(false)
-          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', disk_gb: '', user_data: '' })
+          setLaunchForm({ 
+            template_id: (templates && templates.length > 0) ? String(templates[0].id) : '', 
+            name: '', 
+            cpu: '', 
+            memory_mb: '', 
+            disk_gb: '', 
+            user_data: '' 
+          })
         },
       }
     )
@@ -368,23 +383,34 @@ export default function VMs() {
         isOpen={showLaunchModal} 
         onClose={() => { 
           setShowLaunchModal(false); 
-          setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', disk_gb: '', user_data: '' }) 
+          setLaunchForm({ 
+            template_id: (templates && templates.length > 0) ? String(templates[0].id) : '', 
+            name: '', 
+            cpu: '', 
+            memory_mb: '', 
+            disk_gb: '', 
+            user_data: '' 
+          }) 
         }} 
         title="Launch Virtual Machine"
       >
         <form onSubmit={handleLaunch} className="space-y-4 max-h-[70vh] overflow-y-auto px-1">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">Template ID <span className="text-red-400">*</span></label>
-              <input
-                type="number"
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Template <span className="text-red-400">*</span></label>
+              <select
                 value={launchForm.template_id}
                 onChange={(e) => setLaunchForm({ ...launchForm, template_id: e.target.value })}
                 required
-                placeholder="0"
-                min="0"
                 className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
-              />
+              >
+                <option value="" disabled>Select a template...</option>
+                {templates?.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-1.5">Name</label>
@@ -449,7 +475,17 @@ export default function VMs() {
           <div className="flex gap-3 pt-4 sticky bottom-0 bg-slate-900 pb-2">
             <button
               type="button"
-              onClick={() => { setShowLaunchModal(false); setLaunchForm({ template_id: '', name: '', cpu: '', memory_mb: '', disk_gb: '', user_data: '' }) }}
+              onClick={() => { 
+                setShowLaunchModal(false); 
+                setLaunchForm({ 
+                  template_id: (templates && templates.length > 0) ? String(templates[0].id) : '', 
+                  name: '', 
+                  cpu: '', 
+                  memory_mb: '', 
+                  disk_gb: '', 
+                  user_data: '' 
+                }) 
+              }}
               className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors"
             >
               Cancel

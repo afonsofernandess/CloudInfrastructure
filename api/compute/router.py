@@ -8,7 +8,7 @@ from api.auth.jwt import get_current_user
 from api.auth.models import User
 from api.compute.models import VMInstance, VMMetric
 from api.database_service.models import DBInstance
-from api.compute.schemas import VMCreate, VMResponse, ClusterStatus, VMMetricResponse, EnergyStats
+from api.compute.schemas import VMCreate, VMResponse, ClusterStatus, VMMetricResponse, EnergyStats, TemplateResponse
 from api.compute import sla
 from opennebula.vm_manager import create_vm, destroy_vm, get_vm, list_vms_by_one_user
 
@@ -341,3 +341,12 @@ def prewarm_vm(
 
     background_tasks.add_task(do_prewarm)
     return {"message": "Pre-warming initiated in the background"}
+
+
+# GET /compute/templates — list available VM templates from OpenNebula
+@router.get("/templates", response_model=list[TemplateResponse])
+def get_templates(
+    current_user: User = Depends(get_current_user),
+):
+    from opennebula.vm_manager import list_templates
+    return list_templates()

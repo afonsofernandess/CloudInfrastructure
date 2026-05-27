@@ -57,3 +57,8 @@ class EnergyStats(BaseModel):
     hours_saved: float
     energy_saved_kwh: float
     co2_saved_kg: float
+
+
+class TemplateResponse(BaseModel):
+    id: int
+    name: str

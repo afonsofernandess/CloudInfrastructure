@@ -28,3 +28,8 @@ export async function prewarmVM() {
   const res = await client.post('/compute/prewarm')
   return res.data
 }
+
+export async function listTemplates() {
+  const res = await client.get('/compute/templates')
+  return res.data
+}

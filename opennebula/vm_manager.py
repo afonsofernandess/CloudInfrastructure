@@ -229,3 +229,27 @@ def _vm_to_dict(vm) -> dict:
         "memory_limit_mb": memory_limit_mb,
         "disk_gb": disk_gb,
     }
+
+
+def list_templates() -> list[dict]:
+    """Return a list of all VM templates available in OpenNebula."""
+    try:
+        client = get_client()
+        pool = client.templatepool.info(-2, -1, -1)
+        templates = pool.VMTEMPLATE if hasattr(pool, "VMTEMPLATE") else []
+        if not isinstance(templates, list):
+            templates = [templates]
+            
+        result = []
+        for t in templates:
+            result.append({
+                "id": int(t.ID),
+                "name": str(t.NAME),
+            })
+        if result:
+            return result
+    except Exception as e:
+        print(f"WARNING: failed to list templates from OpenNebula: {e}")
+        
+    # Fallback to local hardcoded mapping
+    return [{"id": k, "name": v} for k, v in TEMPLATES.items()]
