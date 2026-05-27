@@ -45,7 +45,10 @@ def provision_vm(
     current_user: User = Depends(get_current_user),
 ):
     # Enforce MAX_VMS SLA per user
-    user_vm_count = db.query(VMInstance).filter(VMInstance.user_id == current_user.id).count()
+    user_vm_count = db.query(VMInstance).filter(
+        VMInstance.user_id == current_user.id,
+        VMInstance.terminated_at == None
+    ).count()
     if user_vm_count >= sla.MAX_VMS:
         raise HTTPException(
             status_code=400,
