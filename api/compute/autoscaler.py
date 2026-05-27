@@ -222,6 +222,29 @@ class AutoScaler:
             for vm in autoscale_vms:
                 vid = vm["one_vm_id"]
                 if vm["cpu_usage_pct"] < sla.SCALE_DOWN_CPU_PCT:
+                    # Drain check: verify if the VM is hosting any containers
+                    ip = vm.get("ip_address")
+                    if not ip or ip == "—":
+                        # Skip if VM is not fully booted or has no IP address
+                        continue
+
+                    has_containers = False
+                    try:
+                        import docker
+                        cli = docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True, timeout=3)
+                        containers = cli.containers.list(all=True)
+                        if len(containers) > 0:
+                            has_containers = True
+                        cli.close()
+                    except Exception as e:
+                        log.warning("Could not connect to VM %d to check containers: %s", vid, e)
+                        has_containers = True  # Safe fallback: do not destroy
+
+                    if has_containers:
+                        # Reset idle tracking since it is not actually idle/empty
+                        _idle_since.pop(vid, None)
+                        continue
+
                     if vid not in _idle_since:
                         _idle_since[vid] = now
                     elif (now - _idle_since[vid]).total_seconds() >= sla.SCALE_DOWN_WINDOW_SEC:

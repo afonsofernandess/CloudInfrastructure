@@ -234,11 +234,34 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
                     # If we can't fetch it, assume it is unreachable but not necessarily DONE
                     valid_instances.append((inst, {"state": "UNREACHABLE"}))
             
-            # Prioritize already running/active VMs
+            # Prioritize the active, running VM with the fewest containers (load balancing)
+            best_inst = None
+            min_containers = float('inf')
             for inst, live in valid_instances:
                 if live["state"] == "ACTIVE" and live.get("lcm_state") == 3:
-                    target_inst = inst
-                    break
+                    ip = live.get("ip_address")
+                    if ip and ip != "—":
+                        try:
+                            import docker
+                            cli = docker.DockerClient(base_url=f"ssh://root@{ip}", use_ssh_client=True, timeout=3)
+                            # Count all containers on the host as a load metric
+                            count = len(cli.containers.list(all=True))
+                            cli.close()
+                            
+                            if count < min_containers:
+                                min_containers = count
+                                best_inst = inst
+                        except Exception:
+                            continue
+            
+            if best_inst:
+                target_inst = best_inst
+            else:
+                # Fallback to prioritizing the first available active VM
+                for inst, live in valid_instances:
+                    if live["state"] == "ACTIVE" and live.get("lcm_state") == 3:
+                        target_inst = inst
+                        break
             
             if not target_inst:
                 # If none are running, look for a suspended/powered off one to resume
