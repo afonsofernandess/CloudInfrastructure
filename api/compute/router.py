@@ -57,20 +57,21 @@ def provision_vm(
 
     name = data.name or f"vm-user{current_user.id}-{int(datetime.now(timezone.utc).timestamp())}"
 
-    # Pre-warming optimization: check if there is an active pre-warmed VM we can claim
+    # Pre-warming optimization: only claim a pre-warmed VM if no overrides (CPU, memory, disk, or user_data) are requested
     prewarmed_vm = None
-    try:
-        from opennebula.vm_manager import list_all_vms
-        all_vms = list_all_vms()
-        for vm in all_vms:
-            if vm["name"].startswith("prewarmed-vm-") and vm["state"] == "ACTIVE" and vm.get("lcm_state") == 3:
-                # Make sure it isn't already registered as active in our DB
-                inst_check = db.query(VMInstance).filter(VMInstance.one_vm_id == vm["one_vm_id"]).first()
-                if not inst_check or inst_check.terminated_at is not None:
-                    prewarmed_vm = vm
-                    break
-    except Exception as e:
-        print(f"DEBUG: Failed to search for pre-warmed VMs: {e}")
+    if (data.cpu is None and data.memory_mb is None and data.disk_gb is None and data.user_data is None):
+        try:
+            from opennebula.vm_manager import list_all_vms
+            all_vms = list_all_vms()
+            for vm in all_vms:
+                if vm["name"].startswith("prewarmed-vm-") and vm["state"] == "ACTIVE" and vm.get("lcm_state") == 3:
+                    # Make sure it isn't already registered as active in our DB
+                    inst_check = db.query(VMInstance).filter(VMInstance.one_vm_id == vm["one_vm_id"]).first()
+                    if not inst_check or inst_check.terminated_at is not None:
+                        prewarmed_vm = vm
+                        break
+        except Exception as e:
+            print(f"DEBUG: Failed to search for pre-warmed VMs: {e}")
 
     one_vm_id = None
     if prewarmed_vm:
@@ -95,6 +96,7 @@ def provision_vm(
                 user_id=current_user.one_user_id,
                 cpu=data.cpu,
                 memory_mb=data.memory_mb,
+                disk_gb=data.disk_gb,
                 user_data=data.user_data,
             )
         except Exception as e:

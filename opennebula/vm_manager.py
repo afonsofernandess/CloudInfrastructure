@@ -28,6 +28,7 @@ def create_vm(
     template_id: int = DEFAULT_TEMPLATE_ID,
     cpu: float = None,
     memory_mb: int = None,
+    disk_gb: int = None,
     user_data: str = None,
     user_id: int = None,
     group_id: int = None,
@@ -102,8 +103,9 @@ def create_vm(
     if context:
         overrides.append("CONTEXT = [ " + " , ".join(context) + " ]")
 
-    # Ensure root disk is expanded to 2048 MB (2 GB) on instantiation
-    overrides.append('DISK = [ IMAGE_ID = "0", SIZE = "2048" ]')
+    # Ensure root disk is expanded to the requested size (or fallback to 2048 MB)
+    disk_size_mb = (disk_gb * 1024) if disk_gb else 2048
+    overrides.append(f'DISK = [ IMAGE_ID = "0", SIZE = "{disk_size_mb}" ]')
 
     extra_config = "\n".join(overrides)
 

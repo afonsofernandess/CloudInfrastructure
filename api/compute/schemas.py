@@ -8,6 +8,7 @@ class VMCreate(BaseModel):
     template_id: Optional[int] = 0      # defaults to Alpine Linux 3.20
     cpu: Optional[float] = None         # override CPU (e.g. 0.5)
     memory_mb: Optional[int] = None     # override Memory (e.g. 1024)
+    disk_gb: Optional[int] = None       # override disk size in GB (e.g. 10)
     user_data: Optional[str] = None      # Shell script to run on boot
 
 
