@@ -62,9 +62,17 @@ done
 
 # ── 2. FastAPI backend ─────────────────────────────────────────────────────────
 echo "[2/3] Starting FastAPI backend..."
-uvicorn api.main:app --port 8000 --reload \
+UVICORN_BIN="uvicorn"
+if [ -f "$PROJECT_ROOT/.venv/bin/uvicorn" ]; then
+  UVICORN_BIN="$PROJECT_ROOT/.venv/bin/uvicorn"
+elif [ -f "$PROJECT_ROOT/venv/bin/uvicorn" ]; then
+  UVICORN_BIN="$PROJECT_ROOT/venv/bin/uvicorn"
+fi
+
+"$UVICORN_BIN" api.main:app --port 8000 --reload \
   > /tmp/cloud_api.log 2>&1 &
 PIDS+=($!)
+
 
 # Wait for API to be ready
 for i in $(seq 1 20); do
