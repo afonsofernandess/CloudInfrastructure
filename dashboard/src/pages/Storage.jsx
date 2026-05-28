@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
-import { HardDrive, Upload, Download, Trash2, FileText, Plus, Disc, Files, Clock } from 'lucide-react'
-import { useFiles, useUploadFile, useDeleteFile, useDisks, useCreateDisk, useDeleteDisk } from '../hooks/useFiles'
+import { HardDrive, Upload, Download, Trash2, FileText, Plus, Disc, Files, Clock, Link, Link2Off } from 'lucide-react'
+import { useFiles, useUploadFile, useDeleteFile, useDisks, useCreateDisk, useDeleteDisk, useAttachDisk, useDetachDisk } from '../hooks/useFiles'
+import { useVMs } from '../hooks/useVMs'
 import { downloadFile } from '../api/storage'
 import ConfirmDialog from '../components/shared/ConfirmDialog'
 import EmptyState from '../components/shared/EmptyState'
@@ -27,9 +28,16 @@ export default function Storage() {
   const { data: disks, isLoading: disksLoading } = useDisks()
   const createDisk = useCreateDisk()
   const deleteDisk = useDeleteDisk()
+  const attachDisk = useAttachDisk()
+  const detachDisk = useDetachDisk()
   const [newDiskName, setNewDiskName] = useState('')
   const [newDiskSize, setNewDiskSize] = useState(5) // default 5 GB
   const [confirmDeleteDiskId, setConfirmDeleteDiskId] = useState(null)
+
+  // VMs for disk attachment selection
+  const { data: vms } = useVMs()
+  const activeVms = vms?.filter((vm) => vm.state === 'ACTIVE' || vm.state === 'RUNNING') || []
+  const [attachSelection, setAttachSelection] = useState({}) // { diskId: vmId }
 
   // Files Handlers
   const handleFiles = (fileList) => {
@@ -86,6 +94,27 @@ export default function Storage() {
         },
       }
     )
+  }
+
+  const handleAttachDisk = (diskId) => {
+    const vmId = attachSelection[diskId]
+    if (!vmId) return
+    attachDisk.mutate(
+      { diskId, vmId: parseInt(vmId) },
+      {
+        onSuccess: () => {
+          setAttachSelection((prev) => {
+            const next = { ...prev }
+            delete next[diskId]
+            return next
+          })
+        },
+      }
+    )
+  }
+
+  const handleDetachDisk = (diskId) => {
+    detachDisk.mutate(diskId)
   }
 
   const totalSize = files?.reduce((sum, f) => sum + (f.size_bytes || 0), 0) ?? 0
@@ -233,9 +262,9 @@ export default function Storage() {
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
           {/* Create Disk Panel */}
-          <div className="lg:col-span-1 bg-slate-900 border border-slate-700 rounded-xl p-6 h-fit space-y-4">
+          <div className="xl:col-span-1 bg-slate-900 border border-slate-700 rounded-xl p-6 h-fit space-y-4">
             <div className="flex items-center gap-2 border-b border-slate-700 pb-3">
               <Plus className="w-5 h-5 text-blue-400" />
               <h2 className="text-lg font-semibold text-slate-200">Create Virtual Disk</h2>
@@ -283,7 +312,7 @@ export default function Storage() {
           </div>
 
           {/* Disk Listing Table */}
-          <div className="lg:col-span-2 bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
+          <div className="xl:col-span-3 bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
             <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-slate-800/30">
               <h2 className="text-md font-semibold text-slate-300">Disk Volumes (OpenNebula Block Storage)</h2>
             </div>
@@ -306,6 +335,7 @@ export default function Storage() {
                       <th className="px-4 py-3 text-left">Name</th>
                       <th className="px-4 py-3 text-left">Size</th>
                       <th className="px-4 py-3 text-left">Status</th>
+                      <th className="px-4 py-3 text-left">Attachment (Virtual Machine)</th>
                       <th className="px-4 py-3 text-left">Created At</th>
                       <th className="px-4 py-3 text-left">Actions</th>
                     </tr>
@@ -335,6 +365,48 @@ export default function Storage() {
                           >
                             {disk.status}
                           </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {disk.attached_vm_id ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-emerald-400 font-medium">{disk.attached_vm_name}</span>
+                              <button
+                                onClick={() => handleDetachDisk(disk.id)}
+                                disabled={detachDisk.isPending}
+                                className="flex items-center gap-1 text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-2 py-1 rounded border border-slate-700 transition-colors"
+                                title="Detach from VM"
+                              >
+                                <Link2Off className="w-3 h-3" />
+                                Detach
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <select
+                                value={attachSelection[disk.id] || ''}
+                                onChange={(e) =>
+                                  setAttachSelection((prev) => ({ ...prev, [disk.id]: e.target.value }))
+                                }
+                                disabled={disk.status !== 'READY'}
+                                className="bg-slate-950 border border-slate-700 text-xs rounded px-2.5 py-1.5 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                <option value="">Select VM...</option>
+                                {activeVms.map((vm) => (
+                                  <option key={vm.id} value={vm.id}>
+                                    {vm.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                onClick={() => handleAttachDisk(disk.id)}
+                                disabled={!attachSelection[disk.id] || attachDisk.isPending || disk.status !== 'READY'}
+                                className="flex items-center gap-1 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-semibold text-xs px-2.5 py-1.5 rounded transition-colors"
+                              >
+                                <Link className="w-3.5 h-3.5" />
+                                Attach
+                              </button>
+                            </div>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-slate-400">
                           <div className="flex items-center gap-1.5 text-xs">
@@ -378,8 +450,8 @@ export default function Storage() {
         onClose={() => setConfirmDeleteDiskId(null)}
         onConfirm={() => {
           deleteDisk.mutate(confirmDeleteDiskId)
-          setConfirmDeleteDiskId(null)}
-        }
+          setConfirmDeleteDiskId(null)
+        }}
         title="Delete Virtual Disk"
         message="Are you sure you want to delete this virtual disk volume? All data stored on it will be permanently lost."
         confirmLabel="Delete Volume"

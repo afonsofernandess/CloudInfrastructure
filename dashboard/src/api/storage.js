@@ -50,3 +50,12 @@ export async function deleteDisk(diskId) {
   await client.delete(`/storage/disks/${diskId}`)
 }
 
+export async function attachDisk(diskId, vmId) {
+  await client.post(`/storage/disks/${diskId}/attach`, { vm_id: vmId })
+}
+
+export async function detachDisk(diskId) {
+  await client.post(`/storage/disks/${diskId}/detach`)
+}
+
+

@@ -125,10 +125,22 @@ def list_user_disks(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    from api.compute.models import VMInstance
     disks = db.query(DiskInstance).filter(DiskInstance.user_id == current_user.id).all()
     res = []
     for d in disks:
         status_str = one_disk_manager.get_disk_status(d.one_image_id)
+        
+        # Check if disk is attached to any VM
+        attached_vm_id = None
+        attached_vm_name = None
+        one_vm_id, disk_index = one_disk_manager.get_attached_vm_and_disk_index(current_user.username, d.one_image_id)
+        if one_vm_id:
+            vm = db.query(VMInstance).filter(VMInstance.one_vm_id == one_vm_id).first()
+            if vm:
+                attached_vm_id = vm.id
+                attached_vm_name = vm.name
+                
         res.append(
             DiskResponse(
                 id=d.id,
@@ -137,6 +149,8 @@ def list_user_disks(
                 size_gb=d.size_gb,
                 status=status_str,
                 created_at=d.created_at,
+                attached_vm_id=attached_vm_id,
+                attached_vm_name=attached_vm_name,
             )
         )
     return res
@@ -167,6 +181,14 @@ def delete_user_disk(
             detail="Disk is currently locked or cloning in OpenNebula. Please wait."
         )
 
+    # Check if attached
+    one_vm_id, _ = one_disk_manager.get_attached_vm_and_disk_index(current_user.username, disk.one_image_id)
+    if one_vm_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete disk because it is currently attached to a Virtual Machine. Detach it first."
+        )
+
     try:
         one_disk_manager.delete_disk(disk.one_image_id)
     except Exception as e:
@@ -180,4 +202,67 @@ def delete_user_disk(
 
     db.delete(disk)
     db.commit()
+
+
+from api.storage.schemas import DiskAttachRequest
+
+# POST /storage/disks/{disk_id}/attach — attach a disk to a VM
+@router.post("/disks/{disk_id}/attach", status_code=status.HTTP_204_NO_CONTENT)
+def attach_user_disk(
+    disk_id: int,
+    data: DiskAttachRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from api.compute.models import VMInstance
+    
+    disk = db.query(DiskInstance).filter(
+        DiskInstance.id == disk_id,
+        DiskInstance.user_id == current_user.id,
+    ).first()
+    if not disk:
+        raise HTTPException(status_code=404, detail="Disk not found")
+        
+    vm = db.query(VMInstance).filter(
+        VMInstance.id == data.vm_id,
+        VMInstance.user_id == current_user.id,
+        VMInstance.terminated_at == None
+    ).first()
+    if not vm:
+        raise HTTPException(status_code=404, detail="Active Virtual Machine not found")
+        
+    # Check if disk is already attached somewhere
+    one_vm_id, _ = one_disk_manager.get_attached_vm_and_disk_index(current_user.username, disk.one_image_id)
+    if one_vm_id:
+        raise HTTPException(status_code=400, detail="Disk is already attached to a Virtual Machine")
+        
+    try:
+        one_disk_manager.attach_disk(vm.one_vm_id, disk.one_image_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OpenNebula attach failed: {e}")
+
+
+# POST /storage/disks/{disk_id}/detach — detach a disk from its VM
+@router.post("/disks/{disk_id}/detach", status_code=status.HTTP_204_NO_CONTENT)
+def detach_user_disk(
+    disk_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    disk = db.query(DiskInstance).filter(
+        DiskInstance.id == disk_id,
+        DiskInstance.user_id == current_user.id,
+    ).first()
+    if not disk:
+        raise HTTPException(status_code=404, detail="Disk not found")
+        
+    one_vm_id, disk_index = one_disk_manager.get_attached_vm_and_disk_index(current_user.username, disk.one_image_id)
+    if not one_vm_id:
+        raise HTTPException(status_code=400, detail="Disk is not attached to any Virtual Machine")
+        
+    try:
+        one_disk_manager.detach_disk(one_vm_id, disk_index)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OpenNebula detach failed: {e}")
+
 
