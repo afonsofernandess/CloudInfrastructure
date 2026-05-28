@@ -44,10 +44,7 @@ This forwards:
 
 ---
 
-## 2. Project Structure
-
-```
-CloudInfrastructure/
+## 2. ProCloudInfrastructure/
 ├── api/
 │   ├── main.py                    # FastAPI app entry point + autoscaler lifespan
 │   ├── database.py                # SQLite setup and DB session dependency
@@ -66,9 +63,10 @@ CloudInfrastructure/
 │   │   ├── terminal.py            # WebSocket SSH terminal proxy through the gateway
 │   │   └── router.py              # Compute endpoints (provision, list, detail, destroy, status)
 │   ├── storage/
+│   │   ├── models.py              # DiskInstance table (tracks virtual disk ownership)
 │   │   ├── minio_client.py        # MinIO wrapper — bucket management, upload, download, list, delete
-│   │   ├── schemas.py             # FileInfo, UploadResponse shapes
-│   │   └── router.py              # Storage endpoints (upload, list, download, delete)
+│   │   ├── schemas.py             # FileInfo, UploadResponse, DiskCreate, DiskResponse shapes
+│   │   └── router.py              # Storage & custom disk endpoints (upload, list, attach, detach, delete)
 │   ├── containers/
 │   │   ├── docker_client.py       # Docker SDK wrapper — launch, list, get, start, stop, remove
 │   │   ├── schemas.py             # ContainerCreate, ContainerResponse shapes
@@ -81,7 +79,8 @@ CloudInfrastructure/
 ├── dashboard/                     # Vite + React management web dashboard
 ├── opennebula/
 │   ├── connection.py              # OpenNebula client factory (pyone)
-│   └── vm_manager.py              # Low-level VM operations: create, destroy, get, list
+│   ├── vm_manager.py              # Low-level VM operations: create, destroy, get, list
+│   └── disk_manager.py            # Low-level virtual disk operations: create, delete, attach, detach
 ├── scripts/
 │   ├── start_all.sh               # Starts dashboard, API server, and MinIO storage in parallel
 │   ├── start_minio.sh             # Starts the MinIO object storage server
@@ -90,7 +89,17 @@ CloudInfrastructure/
 │   ├── test_containers.py         # Container lifecycle test script
 │   ├── test_databases.py          # Database provisioning test script
 │   ├── test_db_metrics.py         # Database metrics verification test script
+│   ├── test_disks.py              # Disk CRUD API verification test script
+│   ├── test_disk_actions.py       # Disk attachment/detachment verification test script
 │   └── test_scale_to_zero.py      # VM inactivity/power-saving test script
+├── minio_data/                    # MinIO data directory (auto-created, git-ignored)
+├── cloud.db                       # SQLite database (auto-created on first run)
+├── GUIDELINES.md                  # Implementation plan and phases
+├── README_DATABASE.md             # DBaaS architecture and testing guide
+├── README_DISK.md                 # Block Storage operation & VM mounting guide
+└── README.md                      # This file
+```
+M inactivity/power-saving test script
 ├── minio_data/                    # MinIO data directory (auto-created, git-ignored)
 ├── cloud.db                       # SQLite database (auto-created on first run)
 ├── GUIDELINES.md                  # Implementation plan and phases
@@ -157,14 +166,21 @@ Real VM autoscaler test — temporarily overrides SLA thresholds in memory, trig
 **`scripts/start_minio.sh`**
 Downloads and starts the MinIO object storage server. Exposes the API on port `9002` and the web console on port `9003`. Data is persisted in `./minio_data/`. Must be running before starting the API server.
 
+**`api/storage/models.py`**
+Defines the `disk_instances` table (`DiskInstance` class) tracking user virtual disk volumes: `id`, `user_id`, `one_image_id` (OpenNebula Image ID), `name`, `size_gb`, and `created_at`.
+
 **`api/storage/minio_client.py`**
-MinIO Python client wrapper. Each user gets a dedicated bucket named `user-{username}`, created automatically on first upload. Exports: `upload_file`, `list_files`, `download_file`, `delete_file`, `ensure_bucket`.
+MinIO Python client wrapper. Configured dynamically via `.env` environment variables. Exports S3 object operations: `upload_file`, `list_files`, `download_file`, `delete_file`.
 
 **`api/storage/schemas.py`**
-Pydantic shapes: `FileInfo` (filename, size_bytes, last_modified) and `UploadResponse` (filename, bucket, size_bytes, message).
+Pydantic shapes for file uploads and OpenNebula custom disks: `FileInfo`, `UploadResponse`, `DiskCreate`, and `DiskResponse` (incorporating optional VM attachment properties).
 
 **`api/storage/router.py`**
-4 endpoints mounted at `/storage`: upload file (multipart form), list files, download file, delete file. All endpoints are per-user isolated — users can only see and access their own bucket.
+Endpoints mounted at `/storage` covering MinIO files and block storage disks: upload, download, list, delete files; and provision, delete, list, attach, and detach custom disks.
+
+**`opennebula/disk_manager.py`**
+Low-level Pyone API calls to manage OpenNebula image datablocks: `create_disk`, `delete_disk`, `attach_disk`, `detach_disk`, `get_disk_status`, and `get_attached_vm_and_disk_index`.
+
 
 **`api/containers/docker_client.py`**
 Docker SDK wrapper. Every container launched gets a Docker label `cloud_user=<username>` applied automatically. All list/start/stop/remove operations filter by this label so users can never access each other's containers. Container names are prefixed with the username (`afonso-webserver`) to avoid naming conflicts. Uses `create()` + `start()` separately so that if start fails (e.g. image error), the stuck container is automatically removed before raising the error.
@@ -202,11 +218,21 @@ Verification script that checks the metrics endpoint of provisioned database ins
 **`scripts/test_scale_to_zero.py`**
 Verification script for user activity-based autoscaler scaling down (scale-to-zero) and wake-up.
 
+**`scripts/test_disks.py`**
+Verification script that validates disk creation, listing, status transitions, and deletion endpoints.
+
+**`scripts/test_disk_actions.py`**
+Verification script testing the full VM attachment and detachment lifecycle of virtual disks.
+
 **`dashboard/`**
 Contains the Vite + React frontend web application for managing all services.
 
 **`README_DATABASE.md`**
 Guide describing DBaaS architecture, connectivity, and database management.
+
+**`README_DISK.md`**
+Guide describing Block Storage disk operations, VM attachment, formatting, and Linux directory mounting.
+
 
 ---
 
@@ -945,9 +971,10 @@ cp dashboard/.env.example dashboard/.env
 | 1 | OpenNebula connection + test script | Done |
 | 2 | User registration, login, JWT auth, account management | Done |
 | 3 | Elastic compute — VM provisioning + auto-scaler | Done |
-| 4 | Disk storage — MinIO object storage | Done |
+| 4 | Disk storage — MinIO object storage & OpenNebula custom disks | Done |
 | 5 | Container service — Docker on demand | Done |
 | 6 | Database service — PostgreSQL on demand (DBaaS) | Done |
 | 7 | SLA + energy saving (scale-to-zero) | Done |
-| 8 | Tests + evaluation metrics + report | Pending |
+| 8 | Tests + evaluation metrics + report | In Progress (Test scripts written) |
+
 
