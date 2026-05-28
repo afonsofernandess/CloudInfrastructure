@@ -16,8 +16,9 @@ Custom cloud infrastructure built on top of **OpenNebula**, re-implementing clou
 8. [Phase 4 — Disk Storage](#8-phase-4--disk-storage)
 9. [Phase 5 — Container Service](#9-phase-5--container-service)
 10. [Phase 6 — Database Service (DBaaS)](#10-phase-6--database-service-dbaas)
-11. [Dashboard — Web UI](#11-dashboard--web-ui)
-12. [Implemented Services Roadmap](#12-implemented-services-roadmap)
+11. [Phase 7 — SLA & Energy Saving](#11-phase-7--sla--energy-saving)
+12. [Dashboard — Web UI](#12-dashboard--web-ui)
+13. [Implemented Services Roadmap](#13-implemented-services-roadmap)
 
 ---
 
@@ -62,25 +63,38 @@ CloudInfrastructure/
 │   │   ├── sla.py                 # SLA constants (min/max VMs, CPU thresholds)
 │   │   ├── monitor.py             # Collects avg CPU/memory from active VMs
 │   │   ├── autoscaler.py          # Background thread: scales VMs up/down per SLA
+│   │   ├── terminal.py            # WebSocket SSH terminal proxy through the gateway
 │   │   └── router.py              # Compute endpoints (provision, list, detail, destroy, status)
 │   ├── storage/
 │   │   ├── minio_client.py        # MinIO wrapper — bucket management, upload, download, list, delete
 │   │   ├── schemas.py             # FileInfo, UploadResponse shapes
 │   │   └── router.py              # Storage endpoints (upload, list, download, delete)
-│   └── containers/
-│       ├── docker_client.py       # Docker SDK wrapper — launch, list, get, start, stop, remove
-│       ├── schemas.py             # ContainerCreate, ContainerResponse shapes
-│       └── router.py              # Container endpoints (launch, list, detail, start, stop, remove)
+│   ├── containers/
+│   │   ├── docker_client.py       # Docker SDK wrapper — launch, list, get, start, stop, remove
+│   │   ├── schemas.py             # ContainerCreate, ContainerResponse shapes
+│   │   └── router.py              # Container endpoints (launch, list, detail, start, stop, remove)
+│   └── database_service/
+│       ├── models.py              # DBInstance table (tracks DB container info)
+│       ├── schemas.py             # DBProvisionRequest, DBCredentials, etc.
+│       ├── db_manager.py          # Docker client wrapper for PostgreSQL containers
+│       └── router.py              # DBaaS endpoints (provision, list, details, delete, metrics)
+├── dashboard/                     # Vite + React management web dashboard
 ├── opennebula/
 │   ├── connection.py              # OpenNebula client factory (pyone)
-│   └── vm_manager.py             # Low-level VM operations: create, destroy, get, list
+│   └── vm_manager.py              # Low-level VM operations: create, destroy, get, list
 ├── scripts/
+│   ├── start_all.sh               # Starts dashboard, API server, and MinIO storage in parallel
 │   ├── start_minio.sh             # Starts the MinIO object storage server
+│   ├── test_autoscaler.py         # Autoscaler test with real OpenNebula VMs
 │   ├── test_connection.py         # Phase 1 connection test script
-│   └── test_autoscaler.py         # Autoscaler test with real OpenNebula VMs
+│   ├── test_containers.py         # Container lifecycle test script
+│   ├── test_databases.py          # Database provisioning test script
+│   ├── test_db_metrics.py         # Database metrics verification test script
+│   └── test_scale_to_zero.py      # VM inactivity/power-saving test script
 ├── minio_data/                    # MinIO data directory (auto-created, git-ignored)
 ├── cloud.db                       # SQLite database (auto-created on first run)
 ├── GUIDELINES.md                  # Implementation plan and phases
+├── README_DATABASE.md             # DBaaS architecture and testing guide
 └── README.md                      # This file
 ```
 
@@ -111,7 +125,7 @@ Three functions that mirror user operations to OpenNebula via `pyone`:
 All 5 auth endpoints (see Phase 2 below).
 
 **`api/main.py`**
-Creates all DB tables on startup, mounts both routers, starts the autoscaler background thread on startup and stops it on shutdown via FastAPI's lifespan.
+Creates all DB tables on startup, mounts all routers, starts the autoscaler background thread on startup and stops it on shutdown via FastAPI's lifespan.
 
 **`opennebula/vm_manager.py`**
 Low-level pyone VM operations: `create_vm`, `destroy_vm`, `get_vm`, `list_all_vms`. Converts raw pyone objects into plain dicts with human-readable state names and metrics.
@@ -130,6 +144,9 @@ Calls `list_all_vms()`, filters to ACTIVE state, and returns aggregate `avg_cpu_
 
 **`api/compute/autoscaler.py`**
 Background `threading.Thread` that runs every 30 seconds. If avg CPU > 70% and VM count < 5 → creates a new VM. If avg CPU < 20% and VM count > 1 → destroys the idle VM (only after it has been idle for 2 minutes to avoid flapping). Exposed as a singleton `autoscaler` imported by `main.py`.
+
+**`api/compute/terminal.py`**
+Provides a WebSocket endpoint mounted at `/terminal/{vm_ip}`. It utilizes Paramiko to connect to the SSH Gateway (`PonchaLaptop`) and open a channel to the target VM's IP, proxying input/output between the web dashboard and the VM's shell.
 
 **`api/compute/router.py`**
 5 endpoints mounted at `/compute`: provision VM, list VMs, get VM detail, destroy VM, cluster status. Only shows the calling user's own VMs. Auto-cleans DB records for VMs already terminated in OpenNebula (state DONE).
@@ -157,6 +174,39 @@ Pydantic shapes: `ContainerCreate` (image, name, optional env dict, optional lis
 
 **`api/containers/router.py`**
 6 endpoints mounted at `/containers`: launch container, list containers, get container detail, start container, stop container, remove container.
+
+**`api/database_service/models.py`**
+Defines the `db_instances` table (`DBInstance` class): `id`, `user_id` (FK to users), `container_id` (Docker full container ID), `instance_name` (user-visible name), `db_name`, `db_user`, `db_password` (plaintext password), `host_port` (assigned host port), `created_at`.
+
+**`api/database_service/schemas.py`**
+Pydantic schemas for the database service: `DBProvisionRequest` (name, db_name, optional vm_id), `DBCredentials` (host, port, credentials and DSN connection string), `DBInstanceResponse`, `DBMetricsResponse` (live connection counts and database size metrics).
+
+**`api/database_service/db_manager.py`**
+Manages PostgreSQL instances running inside Docker containers on user VMs. It handles container creation, deletion, retrieval, status checking, and executes SQL commands internally to calculate metrics like active connections and database size. Enforces per-user isolation using labels (`cloud_db_user=<username>`).
+
+**`api/database_service/router.py`**
+Endpoints mounted at `/databases`: provision PostgreSQL instance, list database instances, get database details + credentials, deprovision (delete) instance, and get live metrics.
+
+**`scripts/start_all.sh`**
+Script to run the MinIO server, FastAPI backend, and React dashboard concurrently, streaming all logs to one place with support for Ctrl+C cleanup.
+
+**`scripts/test_containers.py`**
+Verification script that tests the full lifecycle of containers via the API.
+
+**`scripts/test_databases.py`**
+Verification script testing PostgreSQL-on-demand provisioning, lifecycle, and connections via the API.
+
+**`scripts/test_db_metrics.py`**
+Verification script that checks the metrics endpoint of provisioned database instances.
+
+**`scripts/test_scale_to_zero.py`**
+Verification script for user activity-based autoscaler scaling down (scale-to-zero) and wake-up.
+
+**`dashboard/`**
+Contains the Vite + React frontend web application for managing all services.
+
+**`README_DATABASE.md`**
+Guide describing DBaaS architecture, connectivity, and database management.
 
 ---
 
@@ -888,7 +938,7 @@ cp dashboard/.env.example dashboard/.env
 
 ---
 
-## 12. Implemented Services Roadmap
+## 13. Implemented Services Roadmap
 
 | Phase | Service | Status |
 |-------|---------|--------|
