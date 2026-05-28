@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { listFiles, uploadFile, deleteFile } from '../api/storage'
+import { listFiles, uploadFile, deleteFile, listDisks, createDisk, deleteDisk } from '../api/storage'
 
 const toastStyle = { style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }
 
@@ -38,3 +38,40 @@ export function useDeleteFile() {
     },
   })
 }
+
+export function useDisks() {
+  return useQuery({
+    queryKey: ['disks'],
+    queryFn: listDisks,
+    refetchInterval: 10000,
+  })
+}
+
+export function useCreateDisk() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: createDisk,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['disks'] })
+      toast.success('Disk created successfully', toastStyle)
+    },
+    onError: (err) => {
+      toast.error(err.response?.data?.detail || err.message, toastStyle)
+    },
+  })
+}
+
+export function useDeleteDisk() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: deleteDisk,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['disks'] })
+      toast.success('Disk deleted successfully', toastStyle)
+    },
+    onError: (err) => {
+      toast.error(err.response?.data?.detail || err.message, toastStyle)
+    },
+  })
+}
+

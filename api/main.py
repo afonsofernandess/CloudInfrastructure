@@ -14,6 +14,8 @@ from api.database_service.router import router as databases_router
 import api.auth.models
 import api.compute.models
 import api.database_service.models
+import api.storage.models
+
 
 
 @asynccontextmanager
