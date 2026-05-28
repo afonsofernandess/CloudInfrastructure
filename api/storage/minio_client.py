@@ -4,14 +4,18 @@ Each user gets their own bucket: user-{username}
 Buckets are created automatically on first use.
 """
 
+import os
+from dotenv import load_dotenv
 from minio import Minio
 from minio.error import S3Error
 from io import BytesIO
 
-MINIO_ENDPOINT  = "localhost:9002"
-MINIO_ACCESS    = "minioadmin"
-MINIO_SECRET    = "minioadmin123"
-MINIO_SECURE    = False   # no TLS in local setup
+load_dotenv()
+
+MINIO_ENDPOINT  = os.getenv("MINIO_ENDPOINT", "localhost:9002")
+MINIO_ACCESS    = os.getenv("MINIO_ACCESS", "minioadmin")
+MINIO_SECRET    = os.getenv("MINIO_SECRET", "minioadmin123")
+MINIO_SECURE    = os.getenv("MINIO_SECURE", "False").lower() in ("true", "1", "yes")
 
 
 def get_client() -> Minio:

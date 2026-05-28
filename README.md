@@ -35,7 +35,7 @@ Custom cloud infrastructure built on top of **OpenNebula**, re-implementing clou
 **The SSH tunnel must be active before running anything:**
 
 ```bash
-ssh -L 8080:localhost:80 -L 2633:localhost:2633 ubuntu@[server-ip]
+ssh -L 8080:localhost:80 -L 2633:localhost:2633 -L 9002:localhost:9002 -L 9003:localhost:9003 ubuntu@[server-ip]
 ```
 
 This forwards:
