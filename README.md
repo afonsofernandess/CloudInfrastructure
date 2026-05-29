@@ -44,7 +44,7 @@ This forwards:
 
 ---
 
-## 2. ProCloudInfrastructure/
+## 2. Project Structure
 ├── api/
 │   ├── main.py                    # FastAPI app entry point + autoscaler lifespan
 │   ├── database.py                # SQLite setup and DB session dependency
