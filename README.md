@@ -44,7 +44,9 @@ This forwards:
 
 ---
 
-## 2. ProCloudInfrastructure/
+## 2. Project Structure
+
+```text
 ├── api/
 │   ├── main.py                    # FastAPI app entry point + autoscaler lifespan
 │   ├── database.py                # SQLite setup and DB session dependency
@@ -99,13 +101,7 @@ This forwards:
 ├── README_DISK.md                 # Block Storage operation & VM mounting guide
 └── README.md                      # This file
 ```
-M inactivity/power-saving test script
-├── minio_data/                    # MinIO data directory (auto-created, git-ignored)
-├── cloud.db                       # SQLite database (auto-created on first run)
-├── GUIDELINES.md                  # Implementation plan and phases
-├── README_DATABASE.md             # DBaaS architecture and testing guide
-└── README.md                      # This file
-```
+
 
 ### File Descriptions
 
