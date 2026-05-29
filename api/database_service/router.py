@@ -83,24 +83,43 @@ def list_instances(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    from api.containers.docker_client import get_all_clients
     instances = db.query(DBInstance).filter(DBInstance.user_id == current_user.id).all()
+    
+    # 1. Establish connections to all active VMs once in parallel
+    clients = get_all_clients(current_user.username)
     result = []
-    for inst in instances:
-        client, container, vm_id = db_manager.get_db_container_and_client(current_user.username, inst.container_id)
-        try:
-            status_str = container.status if container else "removed"
-            host_ip = "localhost"
-            if vm_id:
-                host_ip = db_manager.get_vm_ip_by_id(vm_id)
-            result.append(_build_response(inst, status_str, host_ip, vm_id))
-        finally:
-            if client:
+    
+    try:
+        # 2. For each database instance, find its container status
+        for inst in instances:
+            container = None
+            found_vm_id = None
+            for vm_id, client in clients:
                 try:
-                    client.close()
-                    client.api.adapters.clear()
+                    c = client.containers.get(inst.container_id)
+                    container = c
+                    found_vm_id = vm_id
+                    break
                 except Exception:
                     pass
+            
+            status_str = container.status if container else "removed"
+            host_ip = "localhost"
+            if found_vm_id:
+                host_ip = db_manager.get_vm_ip_by_id(found_vm_id)
+            result.append(_build_response(inst, status_str, host_ip, found_vm_id))
+    finally:
+        # 3. Close all clients at the end
+        for vm_id, client in clients:
+            try:
+                client.close()
+                client.api.adapters.clear()
+            except Exception:
+                pass
+                
     return result
+
 
 
 # GET /databases/{instance_id} — get credentials + live status for one instance

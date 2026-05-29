@@ -168,26 +168,34 @@ def _wait_for_port(container, timeout: int = 15) -> int:
 
 
 def get_db_container_and_client(username: str, container_id: str):
-    """Search across all active VMs for the database container and return (client, container, vm_id)."""
+    """Search across all active VMs for the database container and return (client, container, vm_id) in parallel."""
     from api.containers.docker_client import get_all_clients
+    from concurrent.futures import ThreadPoolExecutor
     clients = get_all_clients(username)
-    found_client, found_container, found_vm_id = None, None, None
-    for vm_id, client in clients:
-        if found_container is None:
+    found = {"client": None, "container": None, "vm_id": None}
+
+    def check_vm(item):
+        vm_id, client = item
+        try:
+            c = client.containers.get(container_id)
+            found["client"] = client
+            found["container"] = c
+            found["vm_id"] = vm_id
+            return True
+        except Exception:
             try:
-                c = client.containers.get(container_id)
-                found_client = client
-                found_container = c
-                found_vm_id = vm_id
-                continue
+                client.close()
+                client.api.adapters.clear()
             except Exception:
                 pass
-        try:
-            client.close()
-            client.api.adapters.clear()
-        except Exception:
-            pass
-    return found_client, found_container, found_vm_id
+        return False
+
+    if clients:
+        with ThreadPoolExecutor(max_workers=len(clients)) as executor:
+            list(executor.map(check_vm, clients))
+
+    return found["client"], found["container"], found["vm_id"]
+
 
 
 def get_vm_ip_by_id(vm_id: int) -> str:

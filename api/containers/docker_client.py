@@ -7,8 +7,10 @@ All container operations filter by this label so users never see each other's co
 import docker
 from docker.errors import NotFound, APIError
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
 
 LABEL_KEY = "cloud_user"
+
 
 
 def self_heal_docker(ip: str, ssh_user: str = "root") -> None:
@@ -160,14 +162,13 @@ def get_client(username: str, vm_id: Optional[int] = None) -> docker.DockerClien
 
 
 def get_all_clients(username: str) -> list[tuple[int, docker.DockerClient]]:
-    """Return a list of (vm_instance_id, docker_client) tuples for all active VMs of the user."""
+    """Return a list of (vm_instance_id, docker_client) tuples for all active VMs of the user in parallel."""
     from api.database import SessionLocal
     from api.auth.models import User
     from api.compute.models import VMInstance
     from opennebula.vm_manager import get_vm, get_ssh_user_by_template
 
     db = SessionLocal()
-    clients = []
     try:
         user = db.query(User).filter(User.username == username).first()
         if not user:
@@ -176,20 +177,31 @@ def get_all_clients(username: str) -> list[tuple[int, docker.DockerClient]]:
             VMInstance.user_id == user.id,
             VMInstance.terminated_at == None
         ).all()
-        for inst in instances:
-            try:
-                live = get_vm(inst.one_vm_id)
-                if live["state"] == "ACTIVE" and live["lcm_state"] == 3:
-                    ip = live.get("ip_address")
-                    if ip and ip != "—":
-                        ssh_user = get_ssh_user_by_template(inst.template_id)
-                        cli = docker.DockerClient(base_url=f"ssh://{ssh_user}@{ip}", use_ssh_client=True)
-                        clients.append((inst.id, cli))
-            except Exception:
-                continue
-        return clients
     finally:
         db.close()
+
+    def connect_vm(inst):
+        try:
+            live = get_vm(inst.one_vm_id)
+            if live["state"] == "ACTIVE" and live["lcm_state"] == 3: # 3 = RUNNING
+                ip = live.get("ip_address")
+                if ip and ip != "—":
+                    ssh_user = get_ssh_user_by_template(inst.template_id)
+                    cli = docker.DockerClient(base_url=f"ssh://{ssh_user}@{ip}", use_ssh_client=True)
+                    return (inst.id, cli)
+        except Exception:
+            pass
+        return None
+
+    clients = []
+    if instances:
+        with ThreadPoolExecutor(max_workers=len(instances)) as executor:
+            results = executor.map(connect_vm, instances)
+            for res in results:
+                if res:
+                    clients.append(res)
+    return clients
+
 
 
 def container_label(username: str) -> dict:
@@ -471,10 +483,13 @@ def launch_container(
 
 
 def list_containers(username: str) -> list[dict]:
-    """List all containers belonging to the user across all their active VMs."""
+    """List all containers belonging to the user across all their active VMs in parallel."""
     clients = get_all_clients(username)
     all_containers = []
-    for vm_id, client in clients:
+
+    def fetch_containers(item):
+        vm_id, client = item
+        containers_list = []
         try:
             containers = client.containers.list(
                 all=True,
@@ -483,39 +498,55 @@ def list_containers(username: str) -> list[dict]:
             for c in containers:
                 info = _container_to_dict(c)
                 info["vm_id"] = vm_id
-                all_containers.append(info)
+                containers_list.append(info)
         except Exception:
-            continue
+            pass
         finally:
             try:
                 client.close()
                 client.api.adapters.clear()
             except Exception:
                 pass
+        return containers_list
+
+    if clients:
+        with ThreadPoolExecutor(max_workers=len(clients)) as executor:
+            results = executor.map(fetch_containers, clients)
+            for res in results:
+                all_containers.extend(res)
     return all_containers
 
 
 def get_container(username: str, container_id: str) -> dict:
-    """Get a single container by ID, searching across all active VMs."""
+    """Get a single container by ID, searching across all active VMs in parallel."""
     clients = get_all_clients(username)
-    for vm_id, client in clients:
+
+    def search_container(item):
+        vm_id, client = item
         try:
             container = client.containers.get(container_id)
             if container.labels.get(LABEL_KEY) == username:
                 info = _container_to_dict(container)
                 info["vm_id"] = vm_id
                 return info
-        except NotFound:
-            continue
         except Exception:
-            continue
+            pass
         finally:
             try:
                 client.close()
                 client.api.adapters.clear()
             except Exception:
                 pass
+        return None
+
+    if clients:
+        with ThreadPoolExecutor(max_workers=len(clients)) as executor:
+            results = executor.map(search_container, clients)
+            for res in results:
+                if res:
+                    return res
     raise FileNotFoundError(f"Container '{container_id}' not found on any active VMs")
+
 
 
 def start_container(username: str, container_id: str) -> dict:

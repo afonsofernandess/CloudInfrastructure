@@ -14,3 +14,29 @@ class UploadResponse(BaseModel):
     bucket: str
     size_bytes: int
     message: str
+
+
+class DiskCreate(BaseModel):
+    name: str
+    size_gb: int
+
+
+class DiskResponse(BaseModel):
+    id: int
+    one_image_id: int
+    name: str
+    size_gb: int
+    status: str
+    created_at: datetime
+    attached_vm_id: Optional[int] = None
+    attached_vm_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class DiskAttachRequest(BaseModel):
+    vm_id: int
+
+
+

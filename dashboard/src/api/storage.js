@@ -35,3 +35,27 @@ export async function downloadFile(filename) {
 export async function deleteFile(filename) {
   await client.delete(`/storage/files/${encodeURIComponent(filename)}`)
 }
+
+export async function listDisks() {
+  const res = await client.get('/storage/disks')
+  return res.data
+}
+
+export async function createDisk(data) {
+  const res = await client.post('/storage/disks', data)
+  return res.data
+}
+
+export async function deleteDisk(diskId) {
+  await client.delete(`/storage/disks/${diskId}`)
+}
+
+export async function attachDisk(diskId, vmId) {
+  await client.post(`/storage/disks/${diskId}/attach`, { vm_id: vmId })
+}
+
+export async function detachDisk(diskId) {
+  await client.post(`/storage/disks/${diskId}/detach`)
+}
+
+
