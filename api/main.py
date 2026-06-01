@@ -31,6 +31,30 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE db_instances ADD COLUMN role VARCHAR DEFAULT 'primary'"))
+    except Exception:
+        pass
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE db_instances ADD COLUMN parent_id INTEGER"))
+    except Exception:
+        pass
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE db_instances ADD COLUMN cluster_name VARCHAR"))
+    except Exception:
+        pass
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE db_instances ADD COLUMN read_host_port INTEGER"))
+    except Exception:
+        pass
+
     autoscaler.start()
     yield
     # Shutdown: stop the autoscaler

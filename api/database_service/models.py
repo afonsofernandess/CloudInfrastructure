@@ -18,4 +18,8 @@ class DBInstance(Base):
     db_user = Column(String, nullable=False)                     # POSTGRES_USER
     db_password = Column(String, nullable=False)                 # POSTGRES_PASSWORD (plaintext — internal use)
     host_port = Column(Integer, nullable=False)                  # host port Docker assigned to 5432
+    role = Column(String, default="primary", nullable=False)     # "primary", "replica", or "load_balancer"
+    parent_id = Column(Integer, ForeignKey("db_instances.id"), nullable=True)
+    cluster_name = Column(String, nullable=True)                 # cluster grouping name
+    read_host_port = Column(Integer, nullable=True)              # host port HAProxy assigned to read-only front (5433)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
