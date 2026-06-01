@@ -236,7 +236,7 @@ export default function Databases() {
   const [showProvisionModal, setShowProvisionModal] = useState(false)
   const [credentialsDB, setCredentialsDB] = useState(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
-  const [form, setForm] = useState({ name: '', db_name: '' })
+  const [form, setForm] = useState({ name: '', db_name: '', is_cluster: false, replicas: 1 })
   const [selectedVmId, setSelectedVmId] = useState('')
   const queryClient = useQueryClient()
 
@@ -329,12 +329,14 @@ export default function Databases() {
       {
         name: form.name,
         db_name: form.db_name || undefined,
-        vm_id: selectedVmId ? parseInt(selectedVmId, 10) : undefined
+        vm_id: !form.is_cluster && selectedVmId ? parseInt(selectedVmId, 10) : undefined,
+        is_cluster: form.is_cluster,
+        replicas: form.is_cluster ? parseInt(form.replicas, 10) : undefined
       },
       {
         onSuccess: () => {
           setShowProvisionModal(false)
-          setForm({ name: '', db_name: '' })
+          setForm({ name: '', db_name: '', is_cluster: false, replicas: 1 })
           setSelectedVmId(activeVms.length === 1 ? activeVms[0].id.toString() : '')
         },
       }
@@ -395,7 +397,26 @@ export default function Databases() {
                     : db.credentials?.host || '—'
                   return (
                     <tr key={db.id} className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
-                      <td className="px-4 py-3 text-slate-100 font-medium">{db.instance_name}</td>
+                      <td className="px-4 py-3 text-slate-100 font-medium">
+                        <div className="font-medium text-slate-100">{db.instance_name}</div>
+                        {db.cluster_name && (
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 uppercase tracking-wider">
+                              Cluster: {db.cluster_name}
+                            </span>
+                            <span className={clsx(
+                              "px-1.5 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider border",
+                              db.role === 'primary' 
+                                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                                : db.role === 'load_balancer'
+                                ? "bg-amber-500/10 border-amber-500/20 text-amber-400"
+                                : "bg-indigo-500/10 border-indigo-500/20 text-indigo-400"
+                            )}>
+                              {db.role === 'load_balancer' ? 'LB / HAProxy' : db.role}
+                            </span>
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-slate-400 font-mono text-xs">
                         {db.container_id ? db.container_id.slice(0, 12) : '—'}
                       </td>
@@ -441,7 +462,7 @@ export default function Databases() {
         onClose={() => {
           if (!provision.isPending) {
             setShowProvisionModal(false)
-            setForm({ name: '', db_name: '' })
+            setForm({ name: '', db_name: '', is_cluster: false, replicas: 1 })
             setSelectedVmId(activeVms.length === 1 ? activeVms[0].id.toString() : '')
           }
         }}
@@ -499,43 +520,6 @@ export default function Databases() {
         ) : (
           <form onSubmit={handleProvision} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Target Virtual Machine</label>
-              <select
-                value={selectedVmId}
-                onChange={(e) => setSelectedVmId(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
-              >
-                <option value="">Auto-select / Provision VM (Recommended)</option>
-                {activeVms.map((vm) => {
-                  const stateLabel = vm.state === 'SUSPENDED' ? 'Sleeping' : vm.state;
-                  const ipLabel = vm.ip_address && vm.ip_address !== '—' ? vm.ip_address : 'No IP';
-                  return (
-                    <option key={vm.id} value={vm.id}>
-                      {vm.name || `VM #${vm.id}`} ({ipLabel} - {stateLabel})
-                    </option>
-                  );
-                })}
-              </select>
-              {selectedVmId ? (() => {
-                const target = vms?.find(v => v.id === parseInt(selectedVmId, 10));
-                if (target && (target.state === 'SUSPENDED' || target.state === 'POWEROFF' || target.state === 'STOPPED')) {
-                  return (
-                    <div className="mt-2 text-xs text-purple-400 bg-purple-500/5 border border-purple-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
-                      <span className="mt-0.5">🌙</span>
-                      <span>This VM is sleeping. Provisioning the database will automatically wake it up (~30s).</span>
-                    </div>
-                  );
-                }
-                return null;
-              })() : (
-                <div className="mt-2 text-xs text-blue-400 bg-blue-500/5 border border-blue-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
-                  <span className="mt-0.5">💡</span>
-                  <span>If no running VM is found, a new VM will be automatically provisioned and configured (~45s).</span>
-                </div>
-              )}
-            </div>
-
-            <div>
               <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Instance Name <span className="text-red-400">*</span></label>
               <input
                 type="text"
@@ -556,10 +540,84 @@ export default function Databases() {
                 className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full placeholder-slate-500"
               />
             </div>
+            
+            <div className="flex items-center gap-2 py-1">
+              <input
+                type="checkbox"
+                id="is_cluster"
+                checked={form.is_cluster}
+                onChange={(e) => setForm({ ...form, is_cluster: e.target.checked })}
+                className="w-4 h-4 rounded text-blue-600 bg-slate-800 border-slate-600 focus:ring-blue-500 focus:ring-2"
+              />
+              <label htmlFor="is_cluster" className="text-sm font-medium text-slate-300 cursor-pointer select-none">
+                Enable Load Balancing & Replication (Database Cluster)
+              </label>
+            </div>
+
+            {form.is_cluster && (
+              <div className="bg-slate-800/40 border border-slate-700/60 rounded-lg p-3 space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                    Read Replicas Count
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="5"
+                    value={form.replicas}
+                    onChange={(e) => setForm({ ...form, replicas: parseInt(e.target.value, 10) || 1 })}
+                    className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full text-sm font-mono"
+                  />
+                  <span className="text-[10px] text-slate-500 block mt-1">
+                    Number of read-only standby instances. The cluster will also deploy 1 Primary and 1 HAProxy load balancer.
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {!form.is_cluster && (
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Target Virtual Machine</label>
+                <select
+                  value={selectedVmId}
+                  onChange={(e) => setSelectedVmId(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+                >
+                  <option value="">Auto-select / Provision VM (Recommended)</option>
+                  {activeVms.map((vm) => {
+                    const stateLabel = vm.state === 'SUSPENDED' ? 'Sleeping' : vm.state;
+                    const ipLabel = vm.ip_address && vm.ip_address !== '—' ? vm.ip_address : 'No IP';
+                    return (
+                      <option key={vm.id} value={vm.id}>
+                        {vm.name || `VM #${vm.id}`} ({ipLabel} - {stateLabel})
+                      </option>
+                    );
+                  })}
+                </select>
+                {selectedVmId ? (() => {
+                  const target = vms?.find(v => v.id === parseInt(selectedVmId, 10));
+                  if (target && (target.state === 'SUSPENDED' || target.state === 'POWEROFF' || target.state === 'STOPPED')) {
+                    return (
+                      <div className="mt-2 text-xs text-purple-400 bg-purple-500/5 border border-purple-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
+                        <span className="mt-0.5">🌙</span>
+                        <span>This VM is sleeping. Provisioning the database will automatically wake it up (~30s).</span>
+                      </div>
+                    );
+                  }
+                  return null;
+                })() : (
+                  <div className="mt-2 text-xs text-blue-400 bg-blue-500/5 border border-blue-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
+                    <span className="mt-0.5">💡</span>
+                    <span>If no running VM is found, a new VM will be automatically provisioned and configured (~45s).</span>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex gap-3 pt-2">
               <button
                 type="button"
-                onClick={() => { setShowProvisionModal(false); setForm({ name: '', db_name: '' }) }}
+                onClick={() => { setShowProvisionModal(false); setForm({ name: '', db_name: '', is_cluster: false, replicas: 1 }) }}
                 className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors"
               >
                 Cancel

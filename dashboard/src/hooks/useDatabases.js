@@ -17,12 +17,16 @@ export function useProvisionDB() {
   return useMutation({
     mutationFn: provisionDB,
     onSuccess: (newDB) => {
-      // Instantly show the new database
-      queryClient.setQueryData(['databases'], (old) =>
-        old ? [newDB, ...old] : [newDB]
-      )
-      // Sync from server in background
-      queryClient.refetchQueries({ queryKey: ['databases'] })
+      if (newDB && newDB.primary) {
+        // It's a DBClusterResponse! Just refetch directly to get all instances
+        queryClient.refetchQueries({ queryKey: ['databases'] })
+      } else {
+        // It's a single DBInstance! Optimistically update
+        queryClient.setQueryData(['databases'], (old) =>
+          old ? [newDB, ...old] : [newDB]
+        )
+        queryClient.refetchQueries({ queryKey: ['databases'] })
+      }
       toast.success('Database provisioned', toastStyle)
     },
     onError: (err) => {
