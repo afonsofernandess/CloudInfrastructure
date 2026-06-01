@@ -143,7 +143,7 @@ def create_vm(
     # Override root disk size if custom disk_gb is requested
     if disk_gb:
         disk_size_mb = disk_gb * 1024
-        overrides.append(f'DISK = [ SIZE = "{disk_size_mb}" ]')
+        overrides.append(f'DISK = [ IMAGE_ID = "0", SIZE = "{disk_size_mb}" ]')
 
     extra_config = "\n".join(overrides)
 

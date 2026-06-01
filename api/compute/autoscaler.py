@@ -110,7 +110,7 @@ class AutoScaler:
             if len(prewarmed_vms) < 1 and total < sla.MAX_VMS:
                 name = f"prewarmed-vm-{int(now.timestamp())}"
                 # Create the VM under system/oneadmin (user_id=None)
-                one_vm_id = create_vm(name, sla.DEFAULT_TEMPLATE_ID, user_id=None)
+                one_vm_id = create_vm(name, sla.DEFAULT_TEMPLATE_ID, user_id=None, disk_gb=4)
                 log.info("Replenishing Pre-Warming Pool — created standby VM '%s' (one_vm_id=%d)", name, one_vm_id)
         except Exception as e:
             log.error("Failed to maintain pre-warming pool: %s", e)
@@ -232,7 +232,41 @@ class AutoScaler:
             db.close()
         
         if target_user_id is not None:
-            one_vm_id = create_vm(name, sla.DEFAULT_TEMPLATE_ID, user_id=target_user_id)
+            # Pre-warming optimization: claim a pre-warmed standby VM if available
+            prewarmed_vm = None
+            db = SessionLocal()
+            try:
+                for vm in all_vms:
+                    if vm["name"].startswith("prewarmed-vm-") and vm["state"] == "ACTIVE" and vm.get("lcm_state") == 3:
+                        # Make sure it isn't already registered as active in our DB
+                        inst_check = db.query(VMInstance).filter(VMInstance.one_vm_id == vm["one_vm_id"]).first()
+                        if not inst_check or inst_check.terminated_at is not None:
+                            prewarmed_vm = vm
+                            break
+            except Exception as e:
+                log.error("Failed to search for pre-warmed VMs in autoscale: %s", e)
+            finally:
+                db.close()
+
+            one_vm_id = None
+            if prewarmed_vm:
+                try:
+                    one_vm_id = prewarmed_vm["one_vm_id"]
+                    # Claim in OpenNebula: rename and change ownership
+                    from opennebula.connection import get_client
+                    client = get_client()
+                    client.vm.rename(one_vm_id, name)
+                    client.vm.chown(one_vm_id, target_user_id, -1)
+                    log.info("Successfully claimed pre-warmed VM '%s' (one_vm_id=%d) for autoscale (user_id=%s)", name, one_vm_id, target_user_id)
+                except Exception as e:
+                    log.error("Failed to claim pre-warmed VM in autoscale, falling back to full creation: %s", e)
+                    prewarmed_vm = None
+
+            if not prewarmed_vm:
+                # Fall back to standard on-demand creation
+                one_vm_id = create_vm(name, sla.DEFAULT_TEMPLATE_ID, user_id=target_user_id, disk_gb=4)
+                log.info("Scaled UP — created VM '%s' (one_vm_id=%d) from scratch for user_id=%s", name, one_vm_id, target_user_id)
+
             db = SessionLocal()
             try:
                 new_inst = VMInstance(
@@ -249,7 +283,6 @@ class AutoScaler:
                 db.close()
                 
             self._last_scale_up = now
-            log.info("Scaled UP — created VM '%s' (one_vm_id=%d) for user_id=%s", name, one_vm_id, target_user_id)
         else:
             log.warning("Scale UP failed: No active/fallback user found to assign the new VM.")
         

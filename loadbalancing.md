@@ -124,14 +124,26 @@ When you scale the database cluster (via the `/databases/cluster/{cluster_name}/
    ```
 4. **Zero-Downtime Transition:** The `SIGHUP` signal tells the HAProxy master process to spawn new worker threads to handle fresh connections using the new configuration, while keeping the old threads alive to drain existing active queries. This ensures that scaling operations never drop active connections.
 
-#### E. Sample Configuration File (`haproxy.cfg`)
+#### E. Memory & Concurrency Optimization
+In constrained environment VMs (e.g., 218MB RAM), the default HAProxy container initialization can exceed the memory footprint. To run HAProxy reliably without Out-Of-Memory (OOM) kills, the template implements memory and concurrency limit directives:
+*   `nbthread 1`: Caps HAProxy to a single worker thread instead of multi-threading.
+*   `maxconn 100` / `maxconn 50`: Caps maximum concurrent connections globally and in defaults, capping memory footprint at roughly **~15MB RSS** (down from ~57MB).
+
+#### F. Safe Connection Initialization (`pg_isready`)
+When database clusters are provisioned, there is a delay before the primary container starts accepting socket queries. Attempting to create the `replicator` role or update configurations immediately causes silent database query failure.
+To avoid this race condition, the system runs a polling loop using the PostgreSQL tool `pg_isready` to block progress until the database is fully ready to accept connections before running setup commands.
+
+#### G. Sample Configuration File (`haproxy.cfg`)
 ```haproxy
 global
     log stdout format raw local0
+    nbthread 1
+    maxconn 100
 
 defaults
     log     global
     mode    tcp
+    maxconn 50
     timeout connect 5s
     timeout client  50s
     timeout server  50s
@@ -157,5 +169,50 @@ backend postgres_replicas
     server db-replica-1 172.16.100.3:32801 check
     server db-replica-2 172.16.100.4:32815 check
 ```
+
+---
+
+## 5. API Endpoints Reference (FastAPI Router)
+
+The load balancer features are exposed under the `/loadbalancer` prefix in [router.py](file:///Users/angiebras/Library/CloudStorage/OneDrive-Pessoal/Ambiente%20de%20Trabalho/Mestrado/2-SEMESTRE/CLOUD/CloudInfra/CloudInfrastructure/api/loadbalancer/router.py):
+
+| Method | Endpoint | Request Body | Description |
+| :--- | :--- | :--- | :--- |
+| **POST** | `/loadbalancer/containers/scale` | `ContainerScaleRequest` | Scale generic workers up/down and provision Nginx HTTP proxy |
+| **GET** | `/loadbalancer/containers/scale/{name}` | *None* | Retrieve container group and Nginx load balancer details |
+| **POST** | `/loadbalancer/databases/cluster` | `DBClusterProvisionRequest` | Provision Primary + Standby Replicas + HAProxy Load Balancer |
+| **POST** | `/loadbalancer/databases/cluster/{cluster_name}/scale` | `replicas` (Query Param) | Scale read-replicas count and gracefully reload HAProxy config |
+| **GET** | `/loadbalancer/databases/cluster/{cluster_name}` | *None* | Retrieve DB cluster status, replica health, and HAProxy ports |
+
+---
+
+## 6. How to Test
+
+Three integration and verification options are available:
+
+### A. General Verification Script
+Runs end-to-end Nginx container scaling, database cluster provisioning, and replica scaling:
+1. Start your local FastAPI backend server:
+   ```bash
+   uvicorn api.main:app --port 8000 --reload
+   ```
+2. Execute the verification test:
+   ```bash
+   python scripts/test_load_balancing.py
+   ```
+
+### B. HAProxy Load Balancing & Replication Script
+Performs a write query through the HAProxy write port, checks replication directly on replicas, and tests round-robin distribution by querying the HAProxy read port in a loop:
+1. Execute the HAProxy verification test:
+   ```bash
+   python scripts/test_haproxy.py
+   ```
+
+### C. Resource Cleanup
+Because database clusters are left running after tests for inspection, you can clean up all database cluster containers, data directories, and SQLite database records using the cleanup script:
+```bash
+python "/Users/angiebras/.gemini/antigravity-cli/brain/47288c26-606d-4902-acb8-c3113af86ea9/scratch/cleanup_db_cluster.py"
+```
+
 
 

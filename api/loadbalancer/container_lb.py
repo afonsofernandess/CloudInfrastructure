@@ -192,12 +192,18 @@ http {{
     lb_client = get_client(username, lb_vm_id)
     lb_container_name = f"{username}-{group_name}-lb"
     
+    # Clean up existing load balancer container if it exists to avoid conflicts
     try:
         existing_lb = lb_client.containers.get(lb_container_name)
         existing_lb.remove(force=True)
     except NotFound:
         pass
-        
+
+    try:
+        lb_client.images.get("nginx:alpine")
+    except Exception:
+        lb_client.images.pull("nginx:alpine")
+
     nginx_container = lb_client.containers.create(
         "nginx:alpine",
         name=lb_container_name,

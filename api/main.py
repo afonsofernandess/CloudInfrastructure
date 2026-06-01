@@ -1,3 +1,6 @@
+import os
+os.environ.pop("SSH_AUTH_SOCK", None)
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +12,7 @@ from api.compute.autoscaler import autoscaler
 from api.storage.router import router as storage_router
 from api.containers.router import router as containers_router
 from api.database_service.router import router as databases_router
+from api.loadbalancer.router import router as loadbalancer_router
 
 # Import models so SQLAlchemy registers them before create_all
 import api.auth.models
@@ -77,6 +81,7 @@ app.include_router(storage_router)
 app.include_router(containers_router)
 app.include_router(databases_router)
 app.include_router(terminal_router)
+app.include_router(loadbalancer_router)
 
 
 @app.get("/")

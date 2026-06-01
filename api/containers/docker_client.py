@@ -353,6 +353,7 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
                     name=vm_name,
                     template_id=sla.DEFAULT_TEMPLATE_ID,
                     user_id=user.one_user_id,
+                    disk_gb=4,
                 )
                 print(f"DEBUG: VM '{vm_name}' created from scratch in OpenNebula with one_vm_id={one_vm_id}")
 

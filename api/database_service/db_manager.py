@@ -154,16 +154,22 @@ def provision_db(username: str, instance_name: str, db_name: str, vm_id: Optiona
             pass
 
 
-def _wait_for_port(container, timeout: int = 15) -> int:
+def _wait_for_port(container, timeout: int = 60) -> int:
     """Poll until Docker reports the mapped host port (assigned at container start)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         container.reload()
+        # Fail fast if the container has exited
+        if container.status not in ("running", "created"):
+            raise RuntimeError(
+                f"PostgreSQL container '{container.name}' exited unexpectedly (status={container.status}). "
+                f"Check logs with: docker logs {container.name}"
+            )
         ports = container.ports
         mapping = ports.get(CONTAINER_PORT)
         if mapping:
             return int(mapping[0]["HostPort"])
-        time.sleep(0.3)
+        time.sleep(1)
     raise RuntimeError("PostgreSQL container started but no host port was assigned in time")
 
 

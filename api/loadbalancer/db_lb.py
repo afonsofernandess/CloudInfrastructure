@@ -10,9 +10,9 @@ from api.database_service.models import DBInstance
 from api.database_service.schemas import DBInstanceResponse, DBCredentials
 from api.loadbalancer.schemas import DBClusterResponse
 from api.containers.docker_client import (
-    ensure_user_has_running_vm, get_client,
-    run_ssh_command, write_ssh_file
+    ensure_user_has_running_vm, get_client
 )
+from api.loadbalancer.ssh_utils import run_ssh_command, write_ssh_file
 
 POSTGRES_IMAGE = "postgres:16-alpine"
 LABEL_KEY = "cloud_db_user"
@@ -25,15 +25,20 @@ def _get_client(username: str, vm_id: Optional[int] = None) -> docker.DockerClie
     return get_client(username, vm_id)
 
 
-def _wait_for_port(container, timeout: int = 15) -> int:
+def _wait_for_port(container, timeout: int = 60) -> int:
     deadline = time.time() + timeout
     while time.time() < deadline:
         container.reload()
+        if container.status not in ("running", "created"):
+            raise RuntimeError(
+                f"PostgreSQL container '{container.name}' exited unexpectedly (status={container.status}). "
+                f"Check logs with: docker logs {container.name}"
+            )
         ports = container.ports
         mapping = ports.get(CONTAINER_PORT)
         if mapping:
             return int(mapping[0]["HostPort"])
-        time.sleep(0.3)
+        time.sleep(1)
     raise RuntimeError("PostgreSQL container started but no host port was assigned in time")
 
 
@@ -114,32 +119,56 @@ def provision_cluster(
     db.commit()
     db.refresh(primary_db)
 
-    # Step 2: Configure Primary for replication
+    # Step 2: Configure Primary for replication via direct SSH (exec_run hangs over SSH transport)
     log.info("Configuring Primary DB for replication permissions...")
-    primary_client = _get_client(username, primary_vm_id)
     try:
-        primary_container = primary_client.containers.get(primary_db.container_id)
-        
-        # Create replicator role
-        create_role_cmd = (
-            f"psql -U {primary_db.db_user} -d {primary_db.db_name} "
-            f"-c \"CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'replicasecret';\""
+        container_name = f"db-{username}-{cluster_name}-primary"
+
+        # Wait for PostgreSQL inside the container to be ready to accept connections
+        log.info("Waiting for primary PostgreSQL to accept connections...")
+        db_ready = False
+        for attempt in range(30):
+            try:
+                run_ssh_command(
+                    primary_vm_ip,
+                    f"docker exec {container_name} pg_isready -U {primary_db.db_user} -d {primary_db.db_name}"
+                )
+                db_ready = True
+                log.info("Primary DB is ready!")
+                break
+            except Exception as e:
+                log.info("Primary DB not ready yet (attempt %d/30): %s", attempt + 1, e)
+                time.sleep(1)
+        if not db_ready:
+            raise RuntimeError("Primary DB did not become ready to accept connections in time.")
+
+        # Create replicator role (ignore if already exists)
+        run_ssh_command(
+            primary_vm_ip,
+            f"docker exec {container_name} psql -U {primary_db.db_user} -d {primary_db.db_name} "
+            f"-c \"CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'replicasecret';\" || true"
         )
-        primary_container.exec_run(create_role_cmd)
-        
-        # Allow connections from any subnet to replication
-        primary_container.exec_run(
-            "sh -c \"echo 'host replication replicator 0.0.0.0/0 md5' >> /var/lib/postgresql/data/pg_hba.conf\""
+        log.info("CREATE ROLE replicator done.")
+
+        # Allow replication connections from any host (scram-sha-256 matches PG16 default)
+        run_ssh_command(
+            primary_vm_ip,
+            f"docker exec {container_name} sh -c "
+            f"\"grep -qF 'host replication replicator 0.0.0.0/0' "
+            f"/var/lib/postgresql/data/pg_hba.conf || "
+            f"echo 'host replication replicator 0.0.0.0/0 scram-sha-256' >> /var/lib/postgresql/data/pg_hba.conf\""
         )
-        
+        log.info("pg_hba.conf updated.")
+
         # Reload configuration
-        primary_container.exec_run(
-            f"psql -U {primary_db.db_user} -d {primary_db.db_name} -c \"SELECT pg_reload_conf();\""
+        run_ssh_command(
+            primary_vm_ip,
+            f"docker exec {container_name} psql -U {primary_db.db_user} -d {primary_db.db_name} "
+            f"-c \"SELECT pg_reload_conf();\""
         )
+        log.info("pg_reload_conf done.")
     except Exception as e:
-        log.error("Failed to configure primary replication options: %s", e)
-    finally:
-        primary_client.close()
+        log.error("Failed to configure primary replication options via SSH: %s", e)
 
     # Step 3: Provision Read Replicas
     replicas = []
@@ -156,9 +185,12 @@ def provision_cluster(
             f"docker run --rm -e PGPASSWORD=replicasecret "
             f"-v {local_data_path}:/backup {POSTGRES_IMAGE} "
             f"pg_basebackup -h {primary_vm_ip} -p {primary_db.host_port} "
-            f"-D /backup -U replicator -v -P -R"
+            f"-D /backup -U replicator --checkpoint=fast -v -P -R"
         )
         run_ssh_command(replica_vm_ip, backup_cmd)
+
+        # Fix ownership so the postgres user inside the container can read the data
+        run_ssh_command(replica_vm_ip, f"chown -R 999:999 {local_data_path}")
         
         replica_client = _get_client(username, replica_vm_id)
         replica_container_name = f"db-{username}-{cluster_name}-replica-{i}"
@@ -168,11 +200,24 @@ def provision_cluster(
             existing_c.remove(force=True)
         except NotFound:
             pass
+        try:
+            replica_client.images.get(POSTGRES_IMAGE)
+        except docker.errors.ImageNotFound:
+            log.info("Pulling database replica image '%s'...", POSTGRES_IMAGE)
+            replica_client.images.pull(POSTGRES_IMAGE)
             
         replica_container = replica_client.containers.create(
             POSTGRES_IMAGE,
             name=replica_container_name,
             labels={LABEL_KEY: username},
+            environment={
+                # Required so Postgres can start even if the data dir is somehow empty
+                "POSTGRES_PASSWORD": primary_db.db_password,
+                "POSTGRES_USER": primary_db.db_user,
+                "POSTGRES_DB": primary_db.db_name,
+                # Tell Postgres it is already initialised (pg_basebackup output)
+                "PGDATA": "/var/lib/postgresql/data",
+            },
             ports={CONTAINER_PORT: None},
             volumes={
                 local_data_path: {
@@ -210,9 +255,10 @@ def provision_cluster(
         replicas.append(replica_db)
 
     # Step 4: Deploy HAProxy Load Balancer
-    lb_vm_id = primary_vm_id
-    lb_vm_ip = primary_vm_ip
-    
+    # Use a dedicated VM so HAProxy doesn't compete for memory with the primary PostgreSQL
+    lb_vm_id = ensure_user_has_running_vm(username)
+    lb_vm_ip = db_manager.get_vm_ip_by_id(lb_vm_id)
+
     lb_db = deploy_haproxy_lb(
         db=db,
         username=username,
@@ -265,10 +311,13 @@ def deploy_haproxy_lb(
     # Config has two frontends: 5432 (Write to Primary) and 5433 (Read to primary + replicas)
     haproxy_cfg = f"""global
     log stdout format raw local0
+    nbthread 1
+    maxconn 100
 
 defaults
     log     global
     mode    tcp
+    maxconn 50
     timeout connect 5s
     timeout client  50s
     timeout server  50s
@@ -304,6 +353,11 @@ backend postgres_replicas
         existing.remove(force=True)
     except NotFound:
         pass
+    try:
+        lb_client.images.get("haproxy:2.8-alpine")
+    except docker.errors.ImageNotFound:
+        log.info("Pulling load balancer image 'haproxy:2.8-alpine'...")
+        lb_client.images.pull("haproxy:2.8-alpine")
         
     container = lb_client.containers.create(
         "haproxy:2.8-alpine",
@@ -320,11 +374,28 @@ backend postgres_replicas
     )
     
     container.start()
-    container.reload()
-    
-    ports = container.ports
-    write_port = int(ports["5432/tcp"][0]["HostPort"])
-    read_port = int(ports["5433/tcp"][0]["HostPort"])
+
+    # Poll until Docker assigns both host ports (SSH transport can be slow)
+    _deadline = time.time() + 60
+    write_port = None
+    read_port = None
+    while time.time() < _deadline:
+        container.reload()
+        if container.status not in ("running", "created"):
+            raise RuntimeError(
+                f"HAProxy container '{lb_container_name}' exited unexpectedly (status={container.status})"
+            )
+        _ports = container.ports
+        _w = _ports.get("5432/tcp")
+        _r = _ports.get("5433/tcp")
+        if _w and _r:
+            write_port = int(_w[0]["HostPort"])
+            read_port = int(_r[0]["HostPort"])
+            break
+        time.sleep(1)
+    if write_port is None or read_port is None:
+        raise RuntimeError("HAProxy container started but ports were not assigned in time")
+
     lb_client.close()
 
     existing_lb = db.query(DBInstance).filter(
@@ -397,28 +468,42 @@ def scale_cluster(
             
             local_data_path = f"/var/lib/postgresql/data-{cluster_name}-replica-{i}"
             run_ssh_command(replica_vm_ip, f"mkdir -p {local_data_path} && rm -rf {local_data_path}/*")
-            
+
             backup_cmd = (
                 f"docker run --rm -e PGPASSWORD=replicasecret "
                 f"-v {local_data_path}:/backup {POSTGRES_IMAGE} "
                 f"pg_basebackup -h {primary_vm_ip} -p {primary_db.host_port} "
-                f"-D /backup -U replicator -v -P -R"
+                f"-D /backup -U replicator --checkpoint=fast -v -P -R"
             )
             run_ssh_command(replica_vm_ip, backup_cmd)
-            
+
+            # Fix ownership so the postgres user inside the container can read the data
+            run_ssh_command(replica_vm_ip, f"chown -R 999:999 {local_data_path}")
+
             replica_client = _get_client(username, replica_vm_id)
             replica_container_name = f"db-{username}-{cluster_name}-replica-{i}"
-            
+
             try:
                 existing_c = replica_client.containers.get(replica_container_name)
                 existing_c.remove(force=True)
             except NotFound:
                 pass
-                
+            try:
+                replica_client.images.get(POSTGRES_IMAGE)
+            except docker.errors.ImageNotFound:
+                log.info("Pulling database replica image '%s' for scale-up...", POSTGRES_IMAGE)
+                replica_client.images.pull(POSTGRES_IMAGE)
+
             replica_container = replica_client.containers.create(
                 POSTGRES_IMAGE,
                 name=replica_container_name,
                 labels={LABEL_KEY: username},
+                environment={
+                    "POSTGRES_PASSWORD": primary_db.db_password,
+                    "POSTGRES_USER": primary_db.db_user,
+                    "POSTGRES_DB": primary_db.db_name,
+                    "PGDATA": "/var/lib/postgresql/data",
+                },
                 ports={CONTAINER_PORT: None},
                 volumes={
                     local_data_path: {

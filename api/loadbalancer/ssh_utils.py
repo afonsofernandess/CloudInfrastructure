@@ -6,8 +6,10 @@ from dotenv import load_dotenv
 log = logging.getLogger("loadbalancer.ssh_utils")
 
 
-def run_ssh_command(ip: str, command: str, ssh_user: str = "root") -> str:
-    """Execute a shell command on a target VM by tunneling through the SSH Gateway."""
+def run_ssh_command(ip: str, command: str, ssh_user: str = "root", timeout: int = 120) -> str:
+    """Execute a shell command on a target VM by tunneling through the SSH Gateway.
+    Raises RuntimeError if the command exits with a non-zero status.
+    """
     load_dotenv()
     gw_ip = os.getenv("GATEWAY_IP")
     gw_port = int(os.getenv("GATEWAY_PORT", "22"))
@@ -44,12 +46,20 @@ def run_ssh_command(ip: str, command: str, ssh_user: str = "root") -> str:
             allow_agent=True
         )
         
-        stdin, stdout, stderr = vm_client.exec_command(command)
+        stdin, stdout, stderr = vm_client.exec_command(command, timeout=timeout)
+        exit_code = stdout.channel.recv_exit_status()
         out = stdout.read().decode("utf-8")
         err = stderr.read().decode("utf-8")
-        
-        if err and "warning" not in err.lower() and "info" not in err.lower() and "debconf" not in err.lower():
-            log.warning("SSH command stderr: %s", err)
+
+        if err:
+            log.debug("SSH command stderr on %s: %s", ip, err.strip())
+
+        if exit_code != 0:
+            raise RuntimeError(
+                f"SSH command failed on {ip} (exit {exit_code}):\n"
+                f"  CMD: {command}\n"
+                f"  STDERR: {err.strip()}"
+            )
             
         return out
     finally:
