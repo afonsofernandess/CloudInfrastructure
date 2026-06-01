@@ -9,6 +9,7 @@ from api.auth.router import router as auth_router
 from api.compute.router import router as compute_router
 from api.compute.terminal import router as terminal_router
 from api.compute.autoscaler import autoscaler
+from api.loadbalancer.container_autoscaler import container_autoscaler
 from api.storage.router import router as storage_router
 from api.containers.router import router as containers_router
 from api.database_service.router import router as databases_router
@@ -60,9 +61,11 @@ async def lifespan(app: FastAPI):
         pass
 
     autoscaler.start()
+    container_autoscaler.start()
     yield
     # Shutdown: stop the autoscaler
     autoscaler.stop()
+    container_autoscaler.stop()
 
 
 app = FastAPI(title="My Cloud API", version="1.0.0", lifespan=lifespan)

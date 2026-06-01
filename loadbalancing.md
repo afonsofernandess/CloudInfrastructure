@@ -172,7 +172,29 @@ backend postgres_replicas
 
 ---
 
-## 5. API Endpoints Reference (FastAPI Router)
+## 5. Native Container Autoscaling
+
+The platform features a **native background autoscaler** that automatically adjusts container worker group replicas based on real-time traffic load.
+
+### Daemon Architecture
+* **FastAPI Lifespan Hooks:** The autoscaling daemon runs as a native background thread (`ContainerAutoScaler`) managed by the FastAPI server's lifespan context. It starts when the web application boots and is gracefully stopped upon server shutdown.
+* **Periodic Checking:** The scaler checks metrics every `15 seconds`.
+* **Dynamic Discovery (Stateless):** Rather than keeping scale configuration in a database, the scaler queries the running VMs dynamically. It discovers all container groups by identifying containers with the labels `scale_group=<group_name>` and `role=worker`.
+* **Target Isolation:** The scaling is completely tenant-isolated. It extracts the container owner from the label `cloud_user=<username>` and targets scaling operations specifically to that tenant's workspace.
+
+### Metrics & Scaling Rules
+1. **CPU Tracking:** The daemon connects to the Docker socket of each VM hosting active worker nodes in the group and calculates real-time CPU utilization deltas using:
+   $$\text{CPU Percent} = \frac{\Delta \text{CPU Usage}}{\Delta \text{System CPU Usage}} \times \text{Online CPUs} \times 100$$
+2. **Average Workload Evaluation:** It computes the average CPU percentage across all active workers in the scale group.
+3. **Scaling Parameters:**
+   * **Scale Up Threshold:** Average CPU usage $> 70\%$ trigger provision of $+1$ replica.
+   * **Scale Down Threshold:** Average CPU usage $< 15\%$ trigger removal of $-1$ replica.
+   * **Scaling Limits:** Minimum: `1` replica | Maximum: `4` replicas.
+   * **Cooldown Period:** A `45-second` cooldown is enforced after any scaling action to prevent "thrashing" (rapid provisioning/deprovisioning cycles).
+
+---
+
+## 6. API Endpoints Reference (FastAPI Router)
 
 The load balancer features are exposed under the `/loadbalancer` prefix in [router.py](file:///Users/angiebras/Library/CloudStorage/OneDrive-Pessoal/Ambiente%20de%20Trabalho/Mestrado/2-SEMESTRE/CLOUD/CloudInfra/CloudInfrastructure/api/loadbalancer/router.py):
 
@@ -186,7 +208,7 @@ The load balancer features are exposed under the `/loadbalancer` prefix in [rout
 
 ---
 
-## 6. How to Test
+## 7. How to Test
 
 Three integration and verification options are available:
 
@@ -208,7 +230,14 @@ Performs a write query through the HAProxy write port, checks replication direct
    python scripts/test_haproxy.py
    ```
 
-### C. Resource Cleanup
+### C. Container Load Balancing Connection Routing Script
+Verifies HTTP traffic round-robin distribution by modifying `index.html` files inside Nginx worker containers and executing test queries on the load balancer VM via SSH:
+1. Execute the verification test:
+   ```bash
+   PYTHONPATH=. python scripts/test_http_lb_routing.py
+   ```
+
+### D. Resource Cleanup
 Because database clusters are left running after tests for inspection, you can clean up all database cluster containers, data directories, and SQLite database records using the cleanup script:
 ```bash
 python "/Users/angiebras/.gemini/antigravity-cli/brain/47288c26-606d-4902-acb8-c3113af86ea9/scratch/cleanup_db_cluster.py"

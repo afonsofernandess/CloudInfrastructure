@@ -115,11 +115,13 @@ def scale_container_group(username: str, data: ContainerScaleRequest) -> Contain
             lb_vmid, lb_c, _ = load_balancer
             client = get_client(username, lb_vmid)
             try:
-                lb_c.remove(force=True)
-            except Exception:
-                pass
+                c_to_remove = client.containers.get(lb_c.id)
+                c_to_remove.remove(force=True)
+            except Exception as e:
+                log.error("Failed to remove load balancer container: %s", e)
             finally:
                 client.close()
+
         return ContainerScaleResponse(
             scale_group=group_name,
             replicas_count=0,
