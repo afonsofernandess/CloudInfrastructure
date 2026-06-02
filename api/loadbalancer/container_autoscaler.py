@@ -16,7 +16,7 @@ log.setLevel(logging.INFO)
 
 # Default configuration parameters
 CHECK_INTERVAL_SEC = 10       # Run check every 10 seconds
-CPU_HIGH_THRESHOLD = 20.0     # Scale up if average CPU usage exceeds 20.0%
+CPU_HIGH_THRESHOLD = 70.0     # Scale up if average CPU usage exceeds 70.0%
 CPU_LOW_THRESHOLD = 5.0       # Scale down if average CPU usage falls below 5.0%
 MIN_REPLICAS = 1
 MAX_REPLICAS = 4
