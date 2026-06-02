@@ -15,19 +15,23 @@ log = logging.getLogger("container_autoscaler")
 log.setLevel(logging.INFO)
 
 # Default configuration parameters
-CHECK_INTERVAL_SEC = 15       # Run check every 15 seconds
-CPU_HIGH_THRESHOLD = 70.0     # Scale up if average CPU usage exceeds 70.0%
-CPU_LOW_THRESHOLD = 15.0      # Scale down if average CPU usage falls below 15.0%
+CHECK_INTERVAL_SEC = 10       # Run check every 10 seconds
+CPU_HIGH_THRESHOLD = 20.0     # Scale up if average CPU usage exceeds 20.0%
+CPU_LOW_THRESHOLD = 5.0       # Scale down if average CPU usage falls below 5.0%
 MIN_REPLICAS = 1
 MAX_REPLICAS = 4
-COOLDOWN_SEC = 45            # Minimum seconds between scaling actions for a group
+COOLDOWN_SEC = 30             # Minimum seconds between scaling actions for a group
+STABILIZATION_SEC = 60        # Don't scale a newly-discovered group for this many seconds
+                              # Prevents immediate scale-down after containers boot (0% CPU)
+                              # before any load has started. Same concept as Kubernetes HPA.
 
 class ContainerAutoScaler:
     def __init__(self):
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._stop_event = threading.Event()
         self.enabled = True
-        self._last_scale_time = {}  # Track cooldown per scale group: group_name -> timestamp
+        self._last_scale_time = {}  # group_name -> last scale timestamp
+        self._first_seen = {}       # group_name -> timestamp when first discovered
 
     def start(self):
         log.info("ContainerAutoScaler starting (interval=%ss)", CHECK_INTERVAL_SEC)
@@ -46,26 +50,33 @@ class ContainerAutoScaler:
                     log.error("ContainerAutoScaler error: %s", e, exc_info=True)
 
     def _calculate_cpu_usage(self, container) -> float:
-        """Calculate CPU usage percent for a docker container."""
+        """
+        Calculate CPU usage % by taking TWO stats snapshots 1 second apart.
+
+        stream=False returns a single snapshot where precpu_stats may be stale
+        or zero (especially on idle containers), causing the delta to always be 0.
+        Taking two explicit samples guarantees a real measurement interval.
+        """
         try:
-            stats = container.stats(stream=False)
-            cpu_stats = stats.get('cpu_stats', {})
-            precpu_stats = stats.get('precpu_stats', {})
-            
-            if cpu_stats and precpu_stats:
-                cpu_total = cpu_stats.get('cpu_usage', {}).get('total_usage', 0)
-                precpu_total = precpu_stats.get('cpu_usage', {}).get('total_usage', 0)
-                
-                system_cpu = cpu_stats.get('system_cpu_usage', 0)
-                pre_system_cpu = precpu_stats.get('system_cpu_usage', 0)
-                
-                cpu_delta = cpu_total - precpu_total
-                system_delta = system_cpu - pre_system_cpu
-                
-                if system_delta > 0.0 and cpu_delta > 0.0:
-                    cpu_cores = cpu_stats.get('online_cpus') or len(cpu_stats.get('cpu_usage', {}).get('percpu_usage', [])) or 1
-                    cpu_percent = (cpu_delta / system_delta) * cpu_cores * 100.0
-                    return round(cpu_percent, 1)
+            s1 = container.stats(stream=False)
+            time.sleep(1)
+            s2 = container.stats(stream=False)
+
+            cpu_total   = s2.get("cpu_stats",    {}).get("cpu_usage",  {}).get("total_usage", 0)
+            precpu_total = s1.get("cpu_stats",   {}).get("cpu_usage",  {}).get("total_usage", 0)
+            system_cpu  = s2.get("cpu_stats",    {}).get("system_cpu_usage", 0)
+            pre_sys_cpu = s1.get("cpu_stats",    {}).get("system_cpu_usage", 0)
+
+            cpu_delta    = cpu_total    - precpu_total
+            system_delta = system_cpu   - pre_sys_cpu
+
+            if system_delta > 0 and cpu_delta >= 0:
+                cpu_cores = (
+                    s2.get("cpu_stats", {}).get("online_cpus")
+                    or len(s2.get("cpu_stats", {}).get("cpu_usage", {}).get("percpu_usage", []))
+                    or 1
+                )
+                return round((cpu_delta / system_delta) * cpu_cores * 100.0, 1)
         except Exception:
             pass
         return 0.0
@@ -122,6 +133,9 @@ class ContainerAutoScaler:
                             
                             # Add container to group
                             groups[group_name]['workers'].append((c, vm_id))
+                            # Honour 'no_autoscale' label — mark the group to be skipped
+                            if labels.get('no_autoscale') == 'true':
+                                groups[group_name]['no_autoscale'] = True
                 except Exception as e:
                     log.error("Failed to scan VM %s for user %s: %s", vm_id, user.username, e)
                 finally:
@@ -139,6 +153,24 @@ class ContainerAutoScaler:
             current_count = len(workers)
             
             if current_count == 0:
+                continue
+
+            # Respect 'no_autoscale' label — skip this group entirely
+            if info.get('no_autoscale'):
+                log.debug("Container group '%s' has no_autoscale=true, skipping.", group_name)
+                continue
+
+            # Track when this group was first seen (stabilization window)
+            now = time.time()
+            if group_name not in self._first_seen:
+                self._first_seen[group_name] = now
+                log.info("Container group '%s' first discovered — starting %ds stabilization window.",
+                         group_name, STABILIZATION_SEC)
+
+            age = now - self._first_seen[group_name]
+            if age < STABILIZATION_SEC:
+                log.info("Container group '%s' in stabilization window (%.0fs / %ds) — skipping.",
+                         group_name, age, STABILIZATION_SEC)
                 continue
 
             # Check if this group is in cooldown
@@ -162,7 +194,9 @@ class ContainerAutoScaler:
                         if live_c.status == "running":
                             cpu = self._calculate_cpu_usage(live_c)
                             cpu_usages.append(cpu)
+                            print(f"Container {c.name} on VM {vm_id} CPU usage: {cpu:.1f}% Forca porto")
                         else:
+                            print(f"Container {c.name} on VM {vm_id} is not running (status: {live_c.status}), treating CPU as 0%")
                             cpu_usages.append(0.0)
                     finally:
                         temp_cli.close()

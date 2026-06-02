@@ -16,6 +16,6 @@ SCALE_UP_CPU_PCT = 70.0     # scale up when avg CPU > 70%
 SCALE_DOWN_CPU_PCT = 20.0    # scale down when avg CPU < 20%
 SCALE_DOWN_WINDOW_SEC = 120  # VM must be idle for 2 min before teardown
 CHECK_INTERVAL_SEC = 30      # autoscaler loop interval
-USER_INACTIVITY_TIMEOUT_SEC = 600  # suspend user VMs after 10 minutes of inactivity
+USER_INACTIVITY_TIMEOUT_SEC = 7200  # power off user VMs after 2 hours of API inactivity
 DEFAULT_TEMPLATE_ID = 0      # Alpine Linux 3.20
 

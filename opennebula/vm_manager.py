@@ -166,13 +166,21 @@ def destroy_vm(one_vm_id: int) -> None:
 
 
 def suspend_vm(one_vm_id: int) -> None:
-    """Suspend a VM to save resources."""
+    """
+    Power off a VM to save resources when the user is inactive.
+
+    NOTE: We use 'poweroff-hard' instead of 'suspend' because the Alpine Linux
+    template does not have QEMU guest agent or ACPI suspend support. The 'suspend'
+    action requires the hypervisor to save the VM's full RAM state to disk, which
+    Alpine cannot do — OpenNebula silently falls back to POWEROFF anyway.
+    'poweroff-hard' makes this explicit. resume_vm (below) works from POWEROFF state.
+    """
     client = get_client()
-    client.vm.action("suspend", one_vm_id)
+    client.vm.action("poweroff-hard", one_vm_id)
 
 
 def resume_vm(one_vm_id: int) -> None:
-    """Resume a suspended or powered-off VM."""
+    """Resume a powered-off or suspended VM (boots it back up)."""
     client = get_client()
     client.vm.action("resume", one_vm_id)
 

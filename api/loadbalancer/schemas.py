@@ -10,6 +10,7 @@ class ContainerScaleRequest(BaseModel):
     replicas: int                           # number of container instances
     container_port: str = "80/tcp"          # port of container to balance (e.g. "80/tcp")
     env: Optional[dict[str, str]] = {}      # optional environment variables
+    no_autoscale: bool = False              # if True, workers will be excluded from autoscaling
 
 
 class ContainerScaleResponse(BaseModel):
