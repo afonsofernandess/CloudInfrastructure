@@ -18,6 +18,7 @@ class VMResponse(BaseModel):
     name: str
     template_id: int
     state: str
+    lcm_state: Optional[int] = None
     ip_address: str
     cpu_usage_pct: float
     memory_mb: float

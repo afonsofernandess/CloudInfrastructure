@@ -19,6 +19,17 @@ export async function destroyVM(id) {
   await client.delete(`/compute/vms/${id}`)
 }
 
+export async function startVM(id) {
+  const res = await client.post(`/compute/vms/${id}/start`)
+  return res.data
+}
+
+export async function stopVM(id) {
+  const res = await client.post(`/compute/vms/${id}/stop`)
+  return res.data
+}
+
+
 export async function getClusterStatus() {
   const res = await client.get('/compute/status')
   return res.data

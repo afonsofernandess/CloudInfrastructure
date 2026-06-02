@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { listVMs, createVM, getVM, destroyVM, prewarmVM, listTemplates } from '../api/compute'
+import { listVMs, createVM, getVM, destroyVM, startVM, stopVM, prewarmVM, listTemplates } from '../api/compute'
 
 export function useVMs() {
   return useQuery({
@@ -44,6 +44,42 @@ export function useDestroyVM() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms'] })
       toast.success('VM destroyed', {
+        style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' },
+      })
+    },
+    onError: (err) => {
+      toast.error(err.response?.data?.detail || err.message, {
+        style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' },
+      })
+    },
+  })
+}
+
+export function useStartVM() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: startVM,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success('VM powered on', {
+        style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' },
+      })
+    },
+    onError: (err) => {
+      toast.error(err.response?.data?.detail || err.message, {
+        style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' },
+      })
+    },
+  })
+}
+
+export function useStopVM() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: stopVM,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success('VM powered off', {
         style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' },
       })
     },

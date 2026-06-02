@@ -10,7 +10,7 @@ from api.compute.models import VMInstance, VMMetric
 from api.database_service.models import DBInstance
 from api.compute.schemas import VMCreate, VMResponse, ClusterStatus, VMMetricResponse, EnergyStats, TemplateResponse
 from api.compute import sla
-from opennebula.vm_manager import create_vm, destroy_vm, get_vm, list_vms_by_one_user
+from opennebula.vm_manager import create_vm, destroy_vm, get_vm, list_vms_by_one_user, suspend_vm, resume_vm
 
 router = APIRouter(prefix="/compute", tags=["compute"])
 
@@ -31,6 +31,7 @@ def _build_vm_response(instance: VMInstance) -> dict:
         "template_id": instance.template_id,
         "created_at": instance.created_at,
         "state": live["state"],
+        "lcm_state": live.get("lcm_state"),
         "ip_address": live.get("ip_address", "—"),
         "cpu_usage_pct": live["cpu_usage_pct"],
         "memory_mb": live["memory_mb"],
@@ -208,6 +209,51 @@ def terminate_vm(
     # We keep the VMInstance record in the DB (but state DONE) so we can
     # calculate total uptime/energy saved later.
     # The list_vms endpoint already filters out terminated VMs from the UI.
+
+
+# POST /compute/vms/{vm_id}/start — start (resume) a VM
+@router.post("/vms/{vm_id}/start", response_model=VMResponse)
+def start_vm(
+    vm_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    instance = db.query(VMInstance).filter(
+        VMInstance.id == vm_id,
+        VMInstance.user_id == current_user.id,
+    ).first()
+    if not instance:
+        raise HTTPException(status_code=404, detail="VM not found")
+
+    try:
+        resume_vm(instance.one_vm_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OpenNebula error: {e}")
+
+    return _build_vm_response(instance)
+
+
+# POST /compute/vms/{vm_id}/stop — stop (suspend) a VM
+@router.post("/vms/{vm_id}/stop", response_model=VMResponse)
+def stop_vm(
+    vm_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    instance = db.query(VMInstance).filter(
+        VMInstance.id == vm_id,
+        VMInstance.user_id == current_user.id,
+    ).first()
+    if not instance:
+        raise HTTPException(status_code=404, detail="VM not found")
+
+    try:
+        suspend_vm(instance.one_vm_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OpenNebula error: {e}")
+
+    return _build_vm_response(instance)
+
 
 
 # GET /compute/status — current user's VM metrics + SLA info
