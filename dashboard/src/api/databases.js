@@ -32,3 +32,7 @@ export async function getDatabase(id) {
 export async function deprovisionDB(id) {
   await client.delete(`/databases/${id}`)
 }
+
+export async function deleteCluster(clusterName) {
+  await client.delete(`/loadbalancer/databases/cluster/${clusterName}`)
+}

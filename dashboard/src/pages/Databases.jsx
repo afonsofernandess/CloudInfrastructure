@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Database, Plus, Key, Trash2, Eye, EyeOff, Copy, Check, Activity } from 'lucide-react'
-import { useDatabases, useProvisionDB, useDeprovisionDB } from '../hooks/useDatabases'
+import { useDatabases, useProvisionDB, useDeprovisionDB, useDeleteCluster } from '../hooks/useDatabases'
 import { useVMs } from '../hooks/useVMs'
 import Modal from '../components/shared/Modal'
 import ConfirmDialog from '../components/shared/ConfirmDialog'
@@ -232,10 +232,12 @@ export default function Databases() {
   const { data: vms } = useVMs()
   const provision = useProvisionDB()
   const deprovision = useDeprovisionDB()
+  const deleteClusterMutation = useDeleteCluster()
 
   const [showProvisionModal, setShowProvisionModal] = useState(false)
   const [credentialsDB, setCredentialsDB] = useState(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [confirmDeleteClusterName, setConfirmDeleteClusterName] = useState(null)
   const [form, setForm] = useState({ name: '', db_name: '', is_cluster: false, replicas: 1 })
   const [selectedVmId, setSelectedVmId] = useState('')
   const queryClient = useQueryClient()
@@ -438,13 +440,25 @@ export default function Databases() {
                         >
                           <Key className="w-4 h-4" />
                         </button>
-                        <button
-                          onClick={() => setConfirmDeleteId(db.id)}
-                          className="p-1.5 rounded text-red-400 hover:bg-red-500/10 transition-colors"
-                          title="Delete"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {db.cluster_name ? (
+                          (db.role === 'primary' || db.role === 'load_balancer') && (
+                            <button
+                              onClick={() => setConfirmDeleteClusterName(db.cluster_name)}
+                              className="p-1.5 rounded text-red-400 hover:bg-red-500/10 transition-colors"
+                              title="Delete Cluster"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )
+                        ) : (
+                          <button
+                            onClick={() => setConfirmDeleteId(db.id)}
+                            className="p-1.5 rounded text-red-400 hover:bg-red-500/10 transition-colors"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -645,6 +659,17 @@ export default function Databases() {
         title="Deprovision Database"
         message="This will permanently destroy the database instance and all its data. This action cannot be undone."
         confirmLabel="Deprovision"
+        danger
+      />
+
+      {/* Confirm Delete Cluster */}
+      <ConfirmDialog
+        isOpen={confirmDeleteClusterName != null}
+        onClose={() => setConfirmDeleteClusterName(null)}
+        onConfirm={() => deleteClusterMutation.mutate(confirmDeleteClusterName)}
+        title="Delete Database Cluster"
+        message={`This will permanently destroy the database cluster "${confirmDeleteClusterName}" (including primary, load balancer, and all replicas) and all its data. This action cannot be undone.`}
+        confirmLabel="Delete Cluster"
         danger
       />
     </div>

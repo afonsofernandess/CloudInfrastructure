@@ -104,3 +104,24 @@ def get_cluster(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch cluster details: {e}")
+
+
+# DELETE /loadbalancer/databases/cluster/{cluster_name} — tear down all cluster containers and purge DB records
+@router.delete("/databases/cluster/{cluster_name}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_cluster(
+    cluster_name: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        db_lb.delete_cluster(
+            db=db,
+            username=current_user.username,
+            user_id=current_user.id,
+            cluster_name=cluster_name,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete cluster: {e}")
+
