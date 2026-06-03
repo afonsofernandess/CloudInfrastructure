@@ -308,6 +308,73 @@ Because database clusters are left running after tests for inspection, you can c
 PYTHONPATH=. python scripts/cleanup_db_cluster.py
 ```
 
+---
+
+## 8. Why There is No Database Autoscaler
+
+The container autoscaler ([`container_autoscaler.py`](file:///Users/angiebras/Library/CloudStorage/OneDrive-Pessoal/Ambiente%20de%20Trabalho/Mestrado/2-SEMESTRE/CLOUD/CloudInfra/CloudInfrastructure/api/loadbalancer/container_autoscaler.py)) runs as a background daemon and scales container workers automatically. A natural question is: **why doesn't the same pattern exist for database replicas?**
+
+The answer comes down to the fundamental cost difference between the two scaling operations.
+
+### The Core Problem — `pg_basebackup` is O(database size)
+
+When this platform adds a new read replica, it runs `pg_basebackup` against the live primary:
+
+```bash
+pg_basebackup -h primary_ip -p port -D /backup -U replicator -R
+```
+
+This **streams the entire database, byte by byte, from the live primary**. For any non-trivial database size this is:
+
+| Database size | Approximate backup time | Primary impact |
+|:---|:---|:---|
+| 100 MB (this project) | ~5–10 seconds | Minimal |
+| 10 GB | ~5–15 minutes | Noticeable I/O spike |
+| 100 GB | ~1–2 hours | Significant load on primary |
+| 500 GB | ~4–8+ hours | Severe — can degrade production traffic |
+
+Triggering this automatically in response to a load spike would **make the problem worse**, not better:
+
+```
+DB gets busy
+  → autoscaler fires pg_basebackup
+    → primary forced checkpoint + full disk read starts
+      → primary becomes even busier
+        → existing queries slow down further
+          → load stays high for hours while backup runs
+```
+
+### Why the Container Autoscaler is Safe
+
+Spinning up a new `nginx:alpine` worker takes **3–5 seconds** and has zero impact on existing workers. The cooldown and stabilization windows (30 s and 60 s respectively) are sufficient to prevent thrashing.
+
+For database replicas, even a 10-minute cooldown would be insufficient — the backup operation itself might still be running when the cooldown expires.
+
+### How Real Cloud Platforms Solve This (GCP, AWS, Azure)
+
+Production managed database services never copy data from the live primary when adding a replica. Instead, they use **continuous WAL archiving to object storage**:
+
+1. The primary **continuously ships WAL segments** to object storage (e.g. Google Cloud Storage, S3) in the background — this is always happening, regardless of whether you intend to create a replica.
+2. When a new replica is needed, the platform **restores the most recent automated snapshot** from object storage onto a new disk. This does not touch the primary at all.
+3. The new replica **replays only the WAL delta** (the changes since the snapshot) to catch up to the present — a small, bounded amount of data.
+4. The replica then connects as a streaming standby for ongoing changes.
+
+Some platforms (Google AlloyDB, Amazon Aurora) go further and use a **shared distributed storage layer** — all nodes read from the same underlying storage, so adding a read replica is purely a compute operation (seconds) with no data movement at all.
+
+### Design Decision — Manual Scaling Only
+
+Because this platform uses `pg_basebackup`-based replication, database scaling is kept as a **deliberate, user-triggered action**:
+
+```
+User decides → POST /loadbalancer/databases/cluster/{name}/scale?replicas=2
+```
+
+This is the correct design for this architecture. The user consciously pays the cost of the backup at a time of their choosing — not automatically during a load spike when the primary can least afford it.
+
+> [!NOTE]
+> A read-only **monitoring daemon** (`db_monitor.py`) could be added in future to track connection counts and replication lag and emit warnings when thresholds are exceeded — without ever triggering a scale action automatically. This would provide observability without the operational risk.
+
+
 
 
 
