@@ -33,6 +33,10 @@ def _build_response(instance: DBInstance, status_str: str, host_ip: str, vm_id: 
         credentials=creds,
         created_at=instance.created_at,
         vm_id=vm_id,
+        role=instance.role,
+        parent_id=instance.parent_id,
+        cluster_name=instance.cluster_name,
+        read_host_port=instance.read_host_port,
     )
 
 

@@ -1,14 +1,15 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, useIsMutating } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { listDatabases, provisionDB, deprovisionDB, deleteCluster } from '../api/databases'
 
 const toastStyle = { style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }
 
 export function useDatabases() {
+  const isMutating = useIsMutating()
   return useQuery({
     queryKey: ['databases'],
     queryFn: listDatabases,
-    refetchInterval: 10000,
+    refetchInterval: isMutating > 0 ? false : 10000,
   })
 }
 
