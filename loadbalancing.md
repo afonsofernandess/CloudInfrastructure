@@ -178,19 +178,55 @@ The platform features a **native background autoscaler** that automatically adju
 
 ### Daemon Architecture
 * **FastAPI Lifespan Hooks:** The autoscaling daemon runs as a native background thread (`ContainerAutoScaler`) managed by the FastAPI server's lifespan context. It starts when the web application boots and is gracefully stopped upon server shutdown.
-* **Periodic Checking:** The scaler checks metrics every `15 seconds`.
+* **Periodic Checking:** The scaler checks metrics every **`10 seconds`**.
 * **Dynamic Discovery (Stateless):** Rather than keeping scale configuration in a database, the scaler queries the running VMs dynamically. It discovers all container groups by identifying containers with the labels `scale_group=<group_name>` and `role=worker`.
 * **Target Isolation:** The scaling is completely tenant-isolated. It extracts the container owner from the label `cloud_user=<username>` and targets scaling operations specifically to that tenant's workspace.
+* **Opt-Out Label:** Any scale group can be excluded from autoscaling by setting the label `no_autoscale=true` on its worker containers. The scaler will discover the group but silently skip it every cycle.
+
+### CPU Measurement — Two-Snapshot Method
+The Docker stats API's single-snapshot mode (`stream=False`) returns a stale `precpu_stats` baseline, causing CPU to always read as `0.0%` on idle containers. The autoscaler fixes this by **taking two explicit snapshots 1 second apart** and computing the delta:
+
+```python
+s1 = container.stats(stream=False)
+time.sleep(1)
+s2 = container.stats(stream=False)
+
+cpu_delta    = s2["cpu_stats"]["cpu_usage"]["total_usage"]  - s1["cpu_stats"]["cpu_usage"]["total_usage"]
+system_delta = s2["cpu_stats"]["system_cpu_usage"]          - s1["cpu_stats"]["system_cpu_usage"]
+cpu_pct      = (cpu_delta / system_delta) * online_cpus * 100
+```
+
+This guarantees a real measurement interval and accurate CPU readings even on containers with very low or burst load.
 
 ### Metrics & Scaling Rules
-1. **CPU Tracking:** The daemon connects to the Docker socket of each VM hosting active worker nodes in the group and calculates real-time CPU utilization deltas using:
-   $$\text{CPU Percent} = \frac{\Delta \text{CPU Usage}}{\Delta \text{System CPU Usage}} \times \text{Online CPUs} \times 100$$
-2. **Average Workload Evaluation:** It computes the average CPU percentage across all active workers in the scale group.
+1. **CPU Tracking:** For each worker container in the group, the daemon opens a temporary Docker SSH connection to the host VM, takes the 2-sample CPU measurement, and closes the connection immediately to release socket resources.
+2. **Average Workload Evaluation:** It computes the **average CPU percentage** across all active (running) workers in the scale group. Stopped or errored containers contribute `0.0%`.
 3. **Scaling Parameters:**
-   * **Scale Up Threshold:** Average CPU usage $> 70\%$ trigger provision of $+1$ replica.
-   * **Scale Down Threshold:** Average CPU usage $< 15\%$ trigger removal of $-1$ replica.
-   * **Scaling Limits:** Minimum: `1` replica | Maximum: `4` replicas.
-   * **Cooldown Period:** A `45-second` cooldown is enforced after any scaling action to prevent "thrashing" (rapid provisioning/deprovisioning cycles).
+
+   | Parameter | Value | Description |
+   |:---|:---|:---|
+   | Check interval | `10s` | How often the daemon wakes and evaluates every group |
+   | Scale-up threshold | `70%` avg CPU | Adds `+1` replica if average CPU exceeds this |
+   | Scale-down threshold | `5%` avg CPU | Removes `−1` replica if average CPU falls below this |
+   | Min replicas | `1` | Floor — the autoscaler will never scale below this |
+   | Max replicas | `4` | Ceiling — the autoscaler will never scale above this |
+   | Cooldown | `30s` | Minimum wait between any two scaling actions for a group |
+   | Stabilization window | `60s` | Newly-discovered groups skip scaling for 60 seconds after first detection, preventing premature scale-down when containers first boot at 0% CPU (mirrors Kubernetes HPA stabilization) |
+
+### Scaling Decision Flow (per check cycle)
+
+```
+For each discovered scale group:
+  1. Skip if no_autoscale=true
+  2. Skip if group age < 60s (stabilization window)
+  3. Skip if last scale action < 30s ago (cooldown)
+  4. Measure CPU: take 2 stats snapshots (1s apart) per worker
+  5. avg_cpu = mean of all worker CPU readings
+  6. if avg_cpu > 70% AND replicas < 4  →  scale UP   (+1 replica)
+     if avg_cpu <  5% AND replicas > 1  →  scale DOWN (−1 replica)
+  7. Call scale_container_group() → spins up/down containers + reloads Nginx LB config
+  8. Record timestamp for cooldown
+```
 
 ---
 
@@ -237,11 +273,41 @@ Verifies HTTP traffic round-robin distribution by modifying `index.html` files i
    PYTHONPATH=. python scripts/test_http_lb_routing.py
    ```
 
-### D. Resource Cleanup
+### D. Autoscaler End-to-End Verification Script
+Runs a full scale-up → scale-down lifecycle test against the native container autoscaler:
+
+* **Phase 1 (Scale-UP):** Provisions 2 `nginx:alpine` workers (autoscale enabled), configures gzip compression on a 5 MB test file, then floods the load balancer with 25 concurrent `curl` loops for 90 seconds. The autoscaler should detect `avg_cpu > 70%` and add a 3rd replica.
+* **Phase 2 (Scale-DOWN):** Flood stops, CPU drops. The autoscaler should detect `avg_cpu < 5%` and remove the extra replica within 90 seconds.
+
+> [!IMPORTANT]
+> The API server (`uvicorn`) **must be restarted** before running this test. The two-snapshot CPU fix is only active after a server restart with the updated code.
+
+1. Start (or restart) the API server:
+   ```bash
+   uvicorn api.main:app --port 8000 --reload
+   ```
+2. Run the autoscaler test:
+   ```bash
+   PYTHONPATH=. python scripts/test_autoscaler.py
+   ```
+3. Expected output:
+   ```
+   Scale-UP   (avg CPU >70% → new replica): ✅ PASS
+   Scale-DOWN (avg CPU <5%  → drop replica): ✅ PASS
+   Peak replicas seen: 3
+   ```
+4. If scale-up fails, check the uvicorn server logs for lines like:
+   ```
+   ContainerAutoscale monitor for 'autoscale-test' ... avg_cpu=X.X%
+   ```
+   If `avg_cpu=0.0%`, the server was not restarted and is still using the old single-snapshot code.
+
+### E. Resource Cleanup
 Because database clusters are left running after tests for inspection, you can clean up all database cluster containers, data directories, and SQLite database records using the cleanup script:
 ```bash
-python "/Users/angiebras/.gemini/antigravity-cli/brain/47288c26-606d-4902-acb8-c3113af86ea9/scratch/cleanup_db_cluster.py"
+PYTHONPATH=. python scripts/cleanup_db_cluster.py
 ```
+
 
 
 
