@@ -17,12 +17,16 @@ export function useLaunchContainer() {
   return useMutation({
     mutationFn: launchContainer,
     onSuccess: (newContainer) => {
-      // Instantly inject the new container into the cache
-      queryClient.setQueryData(['containers'], (old) =>
-        old ? [newContainer, ...old] : [newContainer]
-      )
-      // Then sync from server in background
-      queryClient.refetchQueries({ queryKey: ['containers'] })
+      if (newContainer && newContainer.workers) {
+        // It's a ContainerScaleResponse! Just refetch
+        queryClient.refetchQueries({ queryKey: ['containers'] })
+      } else {
+        // It's a single ContainerResponse! Optimistically update
+        queryClient.setQueryData(['containers'], (old) =>
+          old ? [newContainer, ...old] : [newContainer]
+        )
+        queryClient.refetchQueries({ queryKey: ['containers'] })
+      }
       toast.success('Container launched', toastStyle)
     },
     onError: (err) => {

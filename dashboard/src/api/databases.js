@@ -6,8 +6,22 @@ export async function listDatabases() {
 }
 
 export async function provisionDB(data) {
-  const res = await client.post('/databases', data)
-  return res.data
+  if (data.is_cluster) {
+    const payload = {
+      cluster_name: data.name,
+      db_name: data.db_name || undefined,
+      replicas: data.replicas || 1
+    }
+    const res = await client.post('/loadbalancer/databases/cluster', payload)
+    return res.data
+  } else {
+    const res = await client.post('/databases', {
+      name: data.name,
+      db_name: data.db_name || undefined,
+      vm_id: data.vm_id || undefined
+    })
+    return res.data
+  }
 }
 
 export async function getDatabase(id) {
@@ -17,4 +31,17 @@ export async function getDatabase(id) {
 
 export async function deprovisionDB(id) {
   await client.delete(`/databases/${id}`)
+}
+
+export async function deleteCluster(clusterName) {
+  await client.delete(`/loadbalancer/databases/cluster/${clusterName}`)
+}
+
+export async function restartDB(id) {
+  await client.post(`/databases/${id}/restart`)
+}
+
+export async function scaleCluster(clusterName, replicas) {
+  const res = await client.post(`/loadbalancer/databases/cluster/${clusterName}/scale?replicas=${replicas}`)
+  return res.data
 }

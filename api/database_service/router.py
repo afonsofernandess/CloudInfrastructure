@@ -33,6 +33,10 @@ def _build_response(instance: DBInstance, status_str: str, host_ip: str, vm_id: 
         credentials=creds,
         created_at=instance.created_at,
         vm_id=vm_id,
+        role=instance.role,
+        parent_id=instance.parent_id,
+        cluster_name=instance.cluster_name,
+        read_host_port=instance.read_host_port,
     )
 
 
@@ -175,6 +179,33 @@ def deprovision(
 
     db.delete(instance)
     db.commit()
+
+
+# POST /databases/{instance_id}/restart — restart database container
+@router.post("/{instance_id}/restart", status_code=status.HTTP_204_NO_CONTENT)
+def restart_instance(
+    instance_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    instance = db.query(DBInstance).filter(
+        DBInstance.id == instance_id,
+        DBInstance.user_id == current_user.id,
+    ).first()
+    if not instance:
+        raise HTTPException(status_code=404, detail="Database instance not found")
+
+    try:
+        new_ports = db_manager.restart_db(current_user.username, instance.container_id)
+        if "host_port" in new_ports:
+            instance.host_port = new_ports["host_port"]
+        if "read_host_port" in new_ports:
+            instance.read_host_port = new_ports["read_host_port"]
+        db.commit()
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to restart database: {e}")
 
 
 # GET /databases/{instance_id}/metrics — get database connection count & size metrics

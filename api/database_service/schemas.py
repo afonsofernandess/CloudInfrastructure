@@ -26,9 +26,26 @@ class DBInstanceResponse(BaseModel):
     credentials: DBCredentials
     created_at: datetime
     vm_id: Optional[int] = None         # VM ID hosting the database
+    role: str = "primary"
+    parent_id: Optional[int] = None
+    cluster_name: Optional[str] = None
+    read_host_port: Optional[int] = None
 
     class Config:
         from_attributes = True
+
+
+class DBClusterProvisionRequest(BaseModel):
+    cluster_name: str
+    db_name: Optional[str] = None
+    replicas: int = 1
+
+
+class DBClusterResponse(BaseModel):
+    cluster_name: str
+    primary: DBInstanceResponse
+    replicas: list[DBInstanceResponse]
+    load_balancer: Optional[DBInstanceResponse] = None
 
 
 class DBMetricsResponse(BaseModel):

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Server, Plus, RefreshCw, Trash2, ChevronRight, X, Terminal as TerminalIcon } from 'lucide-react'
-import { useVMs, useCreateVM, useDestroyVM, useTemplates } from '../hooks/useVMs'
+import { Server, Plus, RefreshCw, Trash2, ChevronRight, X, Terminal as TerminalIcon, Power } from 'lucide-react'
+import { useVMs, useCreateVM, useDestroyVM, useTemplates, useStartVM, useStopVM } from '../hooks/useVMs'
 import { useClusterStatus } from '../hooks/useClusterStatus'
 import Modal from '../components/shared/Modal'
 import VMTerminal from '../components/VMTerminal'
@@ -156,6 +156,8 @@ export default function VMs() {
   const { data: templates } = useTemplates()
   const createVM = useCreateVM()
   const destroyVM = useDestroyVM()
+  const startVM = useStartVM()
+  const stopVM = useStopVM()
 
   const [showLaunchModal, setShowLaunchModal] = useState(false)
   const [selectedVM, setSelectedVM] = useState(null)
@@ -276,8 +278,14 @@ export default function VMs() {
                     <td className="px-4 py-3 font-mono text-xs text-blue-400">{vm.ip_address || '—'}</td>
                     <td className="px-4 py-3 text-slate-400">{vm.one_vm_id ?? '—'}</td>
                     <td className="px-4 py-3">
-                      <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', vmStateColor(vm.state))}>
-                        {vm.state === 'SUSPENDED' ? 'Sleeping' : (vm.state || '—')}
+                      <span className={clsx('px-2 py-1 text-xs font-medium rounded-full', 
+                        vm.state === 'ACTIVE' && vm.lcm_state !== 3 
+                          ? 'bg-yellow-500/20 text-yellow-400 animate-pulse' 
+                          : vmStateColor(vm.state)
+                      )}>
+                        {vm.state === 'ACTIVE' && vm.lcm_state !== 3 
+                          ? 'Booting' 
+                          : (vm.state === 'SUSPENDED' ? 'Sleeping' : (vm.state || '—'))}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-slate-300">
@@ -291,11 +299,46 @@ export default function VMs() {
                     <td className="px-4 py-3 text-slate-400">{formatDate(vm.created_at)}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1">
+                        {vm.state === 'ACTIVE' && vm.lcm_state === 3 ? (
+                          <button
+                            onClick={() => stopVM.mutate(vm.id)}
+                            disabled={stopVM.isPending || startVM.isPending}
+                            className="p-1.5 rounded text-slate-400 hover:bg-red-500/10 hover:text-red-400 transition-colors disabled:opacity-30"
+                            title="Power Off VM"
+                          >
+                            <Power className="w-4 h-4 text-green-500 hover:text-red-500 transition-colors" />
+                          </button>
+                        ) : vm.state === 'ACTIVE' && vm.lcm_state !== 3 ? (
+                          <button
+                            disabled
+                            className="p-1.5 rounded text-slate-500 opacity-50 cursor-not-allowed"
+                            title="VM is Booting..."
+                          >
+                            <RefreshCw className="w-4 h-4 text-yellow-500 animate-spin" />
+                          </button>
+                        ) : (vm.state === 'POWEROFF' || vm.state === 'SUSPENDED') ? (
+                          <button
+                            onClick={() => startVM.mutate(vm.id)}
+                            disabled={startVM.isPending || stopVM.isPending}
+                            className="p-1.5 rounded text-slate-400 hover:bg-green-500/10 hover:text-green-400 transition-colors disabled:opacity-30"
+                            title="Power On VM"
+                          >
+                            <Power className="w-4 h-4 text-slate-500 hover:text-green-500 transition-colors" />
+                          </button>
+                        ) : (
+                          <button
+                            disabled
+                            className="p-1.5 rounded text-slate-600 opacity-50 cursor-not-allowed"
+                            title={`VM is ${vm.state}`}
+                          >
+                            <Power className="w-4 h-4" />
+                          </button>
+                        )}
                         <button
                           onClick={() => setTerminalVM(vm)}
-                          disabled={vm.state !== 'ACTIVE'}
+                          disabled={vm.state !== 'ACTIVE' || vm.lcm_state !== 3}
                           className="p-1.5 rounded text-slate-400 hover:bg-blue-500/10 hover:text-blue-400 transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-400"
-                          title={vm.state === 'ACTIVE' ? 'Open Terminal' : 'VM must be ACTIVE to open terminal'}
+                          title={vm.state === 'ACTIVE' && vm.lcm_state === 3 ? 'Open Terminal' : 'VM must be ACTIVE and fully booted to open terminal'}
                         >
                           <TerminalIcon className="w-4 h-4" />
                         </button>

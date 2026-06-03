@@ -7,6 +7,7 @@ cloud_db_user=<username> for per-user isolation.
 
 import secrets
 import string
+import threading
 import time
 import docker
 from docker.errors import NotFound
@@ -135,8 +136,9 @@ def provision_db(username: str, instance_name: str, db_name: str, vm_id: Optiona
             container.remove(force=True)
             raise RuntimeError(f"Failed to start PostgreSQL container: {e}") from e
 
-        # Wait up to 15 s for PostgreSQL to bind the port (it writes to logs when ready)
-        host_port = _wait_for_port(container, timeout=15)
+        # Wait up to 60 s for PostgreSQL to bind its port.
+        # 15 s was too short on cold VMs where the image may need to be pulled first.
+        host_port = _wait_for_port(container, timeout=60)
 
         return {
             "container_id": container.id,
@@ -154,16 +156,22 @@ def provision_db(username: str, instance_name: str, db_name: str, vm_id: Optiona
             pass
 
 
-def _wait_for_port(container, timeout: int = 15) -> int:
+def _wait_for_port(container, timeout: int = 60) -> int:
     """Poll until Docker reports the mapped host port (assigned at container start)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         container.reload()
+        # Fail fast if the container has exited
+        if container.status not in ("running", "created"):
+            raise RuntimeError(
+                f"PostgreSQL container '{container.name}' exited unexpectedly (status={container.status}). "
+                f"Check logs with: docker logs {container.name}"
+            )
         ports = container.ports
         mapping = ports.get(CONTAINER_PORT)
         if mapping:
             return int(mapping[0]["HostPort"])
-        time.sleep(0.3)
+        time.sleep(1)
     raise RuntimeError("PostgreSQL container started but no host port was assigned in time")
 
 
@@ -173,15 +181,25 @@ def get_db_container_and_client(username: str, container_id: str):
     from concurrent.futures import ThreadPoolExecutor
     clients = get_all_clients(username)
     found = {"client": None, "container": None, "vm_id": None}
+    lock = threading.Lock()
 
     def check_vm(item):
         vm_id, client = item
         try:
             c = client.containers.get(container_id)
-            found["client"] = client
-            found["container"] = c
-            found["vm_id"] = vm_id
-            return True
+            with lock:
+                if found["container"] is None:
+                    # First thread to find the container wins
+                    found["client"] = client
+                    found["container"] = c
+                    found["vm_id"] = vm_id
+                    return True
+            # A different thread already won — close this client to avoid socket leaks
+            try:
+                client.close()
+                client.api.adapters.clear()
+            except Exception:
+                pass
         except Exception:
             try:
                 client.close()
@@ -249,6 +267,43 @@ def deprovision_db(username: str, container_id: str) -> None:
             raise PermissionError("Database instance does not belong to this user")
 
         container.remove(force=True)
+    except Exception as e:
+        raise e
+    finally:
+        if client:
+            try:
+                client.close()
+                client.api.adapters.clear()
+            except Exception:
+                pass
+
+
+def restart_db(username: str, container_id: str) -> dict:
+    """
+    Restart the database container.
+    Raises PermissionError if the container does not belong to the user.
+    """
+    client = None
+    try:
+        client, container, _ = get_db_container_and_client(username, container_id)
+        if not container:
+            raise FileNotFoundError("Database container not found (it may have been deleted)")
+
+        if container.labels.get(LABEL_KEY) != username:
+            raise PermissionError("Database instance does not belong to this user")
+
+        container.restart()
+        container.reload()
+        
+        ports = container.ports
+        new_ports = {}
+        p5432 = ports.get("5432/tcp")
+        if p5432:
+            new_ports["host_port"] = int(p5432[0]["HostPort"])
+        p5433 = ports.get("5433/tcp")
+        if p5433:
+            new_ports["read_host_port"] = int(p5433[0]["HostPort"])
+        return new_ports
     except Exception as e:
         raise e
     finally:

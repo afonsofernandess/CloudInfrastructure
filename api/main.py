@@ -1,3 +1,6 @@
+import os
+os.environ.pop("SSH_AUTH_SOCK", None)
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,9 +9,11 @@ from api.auth.router import router as auth_router
 from api.compute.router import router as compute_router
 from api.compute.terminal import router as terminal_router
 from api.compute.autoscaler import autoscaler
+from api.loadbalancer.container_autoscaler import container_autoscaler
 from api.storage.router import router as storage_router
 from api.containers.router import router as containers_router
 from api.database_service.router import router as databases_router
+from api.loadbalancer.router import router as loadbalancer_router
 
 # Import models so SQLAlchemy registers them before create_all
 import api.auth.models
@@ -31,10 +36,36 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE db_instances ADD COLUMN role VARCHAR DEFAULT 'primary'"))
+    except Exception:
+        pass
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE db_instances ADD COLUMN parent_id INTEGER"))
+    except Exception:
+        pass
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE db_instances ADD COLUMN cluster_name VARCHAR"))
+    except Exception:
+        pass
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE db_instances ADD COLUMN read_host_port INTEGER"))
+    except Exception:
+        pass
+
     autoscaler.start()
+    container_autoscaler.start()
     yield
     # Shutdown: stop the autoscaler
     autoscaler.stop()
+    container_autoscaler.stop()
 
 
 app = FastAPI(title="My Cloud API", version="1.0.0", lifespan=lifespan)
@@ -53,6 +84,7 @@ app.include_router(storage_router)
 app.include_router(containers_router)
 app.include_router(databases_router)
 app.include_router(terminal_router)
+app.include_router(loadbalancer_router)
 
 
 @app.get("/")

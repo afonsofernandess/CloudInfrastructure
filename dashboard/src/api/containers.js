@@ -6,8 +6,20 @@ export async function listContainers() {
 }
 
 export async function launchContainer(data) {
-  const res = await client.post('/containers', data)
-  return res.data
+  if (data.is_scale_group) {
+    const payload = {
+      name: data.name,
+      image: data.image,
+      replicas: data.replicas || 1,
+      container_port: data.container_port || "80/tcp",
+      env: data.env || {}
+    }
+    const res = await client.post('/loadbalancer/containers/scale', payload)
+    return res.data
+  } else {
+    const res = await client.post('/containers', data)
+    return res.data
+  }
 }
 
 export async function getContainer(id) {

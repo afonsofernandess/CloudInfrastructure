@@ -21,6 +21,21 @@ import clsx from 'clsx'
 
 const QUICK_IMAGES = ['nginx', 'postgres:16-alpine', 'redis:alpine', 'ubuntu:22.04']
 
+function getScaleGroupInfo(containerName) {
+  if (!containerName) return null;
+  // Pattern: <username>-<group_name>-worker-<timestamp>-<idx>
+  const workerMatch = containerName.match(/^([a-zA-Z0-9]+)-(.+)-worker-\d+-\d+$/);
+  if (workerMatch) {
+    return { group: workerMatch[2], role: 'worker' };
+  }
+  // Pattern: <username>-<group_name>-lb
+  const lbMatch = containerName.match(/^([a-zA-Z0-9]+)-(.+)-lb$/);
+  if (lbMatch) {
+    return { group: lbMatch[2], role: 'load_balancer' };
+  }
+  return null;
+}
+
 function formatPorts(ports) {
   if (!ports || typeof ports !== 'object') return '—'
   const entries = Object.entries(ports)
@@ -52,7 +67,28 @@ function ContainerCard({ container, onStart, onStop, onRemove, onViewLogs, isExp
             {container.name}
             {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
           </button>
-          <div className="text-xs text-slate-400 mt-0.5 font-mono">{container.image}</div>
+          {(() => {
+            const scaleInfo = getScaleGroupInfo(container.name);
+            if (scaleInfo) {
+              return (
+                <div className="flex items-center gap-1.5 mt-1">
+                  <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 uppercase tracking-wider font-sans">
+                    Group: {scaleInfo.group}
+                  </span>
+                  <span className={clsx(
+                    "px-1.5 py-0.5 text-[9px] font-bold rounded uppercase tracking-wider border font-sans",
+                    scaleInfo.role === 'worker'
+                      ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                      : "bg-amber-500/10 border-amber-500/20 text-amber-400"
+                  )}>
+                    {scaleInfo.role === 'load_balancer' ? 'LB / Nginx' : scaleInfo.role}
+                  </span>
+                </div>
+              );
+            }
+            return null;
+          })()}
+          <div className="text-xs text-slate-400 mt-1 font-mono">{container.image}</div>
         </div>
         <span className={clsx('px-2 py-0.5 text-xs font-medium rounded-full', statusClass)}>
           {container.status}
@@ -362,6 +398,9 @@ export default function Containers() {
   const [envRows, setEnvRows] = useState([{ key: '', value: '' }])
   const [portsInput, setPortsInput] = useState('')
   const [selectedVmId, setSelectedVmId] = useState('')
+  const [isScaleGroup, setIsScaleGroup] = useState(false)
+  const [replicas, setReplicas] = useState(1)
+  const [containerPort, setContainerPort] = useState('80/tcp')
 
   const activeVms = vms?.filter((vm) => ['ACTIVE', 'SUSPENDED', 'POWEROFF', 'STOPPED', 'PENDING'].includes(vm.state)) || []
 
@@ -378,6 +417,9 @@ export default function Containers() {
     setEnvRows([{ key: '', value: '' }])
     setPortsInput('')
     setSelectedVmId(activeVms.length === 1 ? activeVms[0].id.toString() : '')
+    setIsScaleGroup(false)
+    setReplicas(1)
+    setContainerPort('80/tcp')
   }
 
   const handleLaunch = (e) => {
@@ -392,8 +434,11 @@ export default function Containers() {
         image,
         name: name || undefined,
         env,
-        ports: ports.length ? ports : undefined,
-        vm_id: selectedVmId ? parseInt(selectedVmId, 10) : undefined
+        ports: !isScaleGroup && ports.length ? ports : undefined,
+        vm_id: !isScaleGroup && selectedVmId ? parseInt(selectedVmId, 10) : undefined,
+        is_scale_group: isScaleGroup,
+        replicas: isScaleGroup ? parseInt(replicas, 10) : undefined,
+        container_port: isScaleGroup ? containerPort : undefined
       },
       {
         onSuccess: () => {
@@ -641,42 +686,44 @@ export default function Containers() {
           </div>
         ) : (
           <form onSubmit={handleLaunch} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Target Virtual Machine</label>
-              <select
-                value={selectedVmId}
-                onChange={(e) => setSelectedVmId(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
-              >
-                <option value="">Auto-select / Provision VM (Recommended)</option>
-                {activeVms.map((vm) => {
-                  const stateLabel = vm.state === 'SUSPENDED' ? 'Sleeping' : vm.state;
-                  const ipLabel = vm.ip_address && vm.ip_address !== '—' ? vm.ip_address : 'No IP';
-                  return (
-                    <option key={vm.id} value={vm.id}>
-                      {vm.name || `VM #${vm.id}`} ({ipLabel} - {stateLabel})
-                    </option>
-                  );
-                })}
-              </select>
-              {selectedVmId ? (() => {
-                const target = vms?.find(v => v.id === parseInt(selectedVmId, 10));
-                if (target && (target.state === 'SUSPENDED' || target.state === 'POWEROFF' || target.state === 'STOPPED')) {
-                  return (
-                    <div className="mt-2 text-xs text-purple-400 bg-purple-500/5 border border-purple-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
-                      <span className="mt-0.5">🌙</span>
-                      <span>This VM is sleeping. Launching the container will automatically wake it up (~30s).</span>
-                    </div>
-                  );
-                }
-                return null;
-              })() : (
-                <div className="mt-2 text-xs text-blue-400 bg-blue-500/5 border border-blue-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
-                  <span className="mt-0.5">💡</span>
-                  <span>If no running VM is found, a new VM will be automatically provisioned and configured (~45s).</span>
-                </div>
-              )}
-            </div>
+            {!isScaleGroup && (
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Target Virtual Machine</label>
+                <select
+                  value={selectedVmId}
+                  onChange={(e) => setSelectedVmId(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full"
+                >
+                  <option value="">Auto-select / Provision VM (Recommended)</option>
+                  {activeVms.map((vm) => {
+                    const stateLabel = vm.state === 'SUSPENDED' ? 'Sleeping' : vm.state;
+                    const ipLabel = vm.ip_address && vm.ip_address !== '—' ? vm.ip_address : 'No IP';
+                    return (
+                      <option key={vm.id} value={vm.id}>
+                        {vm.name || `VM #${vm.id}`} ({ipLabel} - {stateLabel})
+                      </option>
+                    );
+                  })}
+                </select>
+                {selectedVmId ? (() => {
+                  const target = vms?.find(v => v.id === parseInt(selectedVmId, 10));
+                  if (target && (target.state === 'SUSPENDED' || target.state === 'POWEROFF' || target.state === 'STOPPED')) {
+                    return (
+                      <div className="mt-2 text-xs text-purple-400 bg-purple-500/5 border border-purple-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
+                        <span className="mt-0.5">🌙</span>
+                        <span>This VM is sleeping. Launching the container will automatically wake it up (~30s).</span>
+                      </div>
+                    );
+                  }
+                  return null;
+                })() : (
+                  <div className="mt-2 text-xs text-blue-400 bg-blue-500/5 border border-blue-500/10 px-3 py-2 rounded-lg flex items-start gap-2">
+                    <span className="mt-0.5">💡</span>
+                    <span>If no running VM is found, a new VM will be automatically provisioned and configured (~45s).</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">Image <span className="text-red-400">*</span></label>
@@ -751,16 +798,66 @@ export default function Containers() {
             </div>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">Ports <span className="text-slate-500">(e.g. 80/tcp,443/tcp)</span></label>
+          <div className="flex items-center gap-2 py-1">
             <input
-              type="text"
-              value={portsInput}
-              onChange={(e) => setPortsInput(e.target.value)}
-              placeholder="80/tcp,443/tcp"
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full font-mono text-sm"
+              type="checkbox"
+              id="is_scale_group"
+              checked={isScaleGroup}
+              onChange={(e) => setIsScaleGroup(e.target.checked)}
+              className="w-4 h-4 rounded text-blue-600 bg-slate-800 border-slate-600 focus:ring-blue-500 focus:ring-2"
             />
+            <label htmlFor="is_scale_group" className="text-sm font-medium text-slate-300 cursor-pointer select-none">
+              Enable Load Balancing & Scaling (Container Scale Group)
+            </label>
           </div>
+
+          {isScaleGroup && (
+            <div className="bg-slate-800/40 border border-slate-700/60 rounded-lg p-3 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                    Replicas Count
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={replicas}
+                    onChange={(e) => setReplicas(parseInt(e.target.value, 10) || 1)}
+                    className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full text-xs font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                    Container Port
+                  </label>
+                  <input
+                    type="text"
+                    value={containerPort}
+                    onChange={(e) => setContainerPort(e.target.value)}
+                    placeholder="80/tcp"
+                    className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full text-xs font-mono"
+                  />
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-500 block">
+                Deploy workers load balanced under a single Nginx reverse proxy endpoint.
+              </span>
+            </div>
+          )}
+
+          {!isScaleGroup && (
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Ports <span className="text-slate-500">(e.g. 80/tcp,443/tcp)</span></label>
+              <input
+                type="text"
+                value={portsInput}
+                onChange={(e) => setPortsInput(e.target.value)}
+                placeholder="80/tcp,443/tcp"
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full font-mono text-sm"
+              />
+            </div>
+          )}
 
           <div className="flex gap-3 pt-2">
             <button
