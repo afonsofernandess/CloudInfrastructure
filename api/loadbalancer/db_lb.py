@@ -158,7 +158,20 @@ def provision_cluster(
             f"/var/lib/postgresql/data/pg_hba.conf || "
             f"echo 'host replication replicator 0.0.0.0/0 scram-sha-256' >> /var/lib/postgresql/data/pg_hba.conf\""
         )
-        log.info("pg_hba.conf updated.")
+        log.info("pg_hba.conf replication rule updated.")
+
+        # Allow all users to connect from any network host via password.
+        # This is required so connections routed through HAProxy (which arrive at
+        # PostgreSQL from the VM bridge/network IP instead of 127.0.0.1) can
+        # authenticate successfully with scram-sha-256.
+        run_ssh_command(
+            primary_vm_ip,
+            f"docker exec {container_name} sh -c "
+            f"\"grep -qF 'host all all 0.0.0.0/0' "
+            f"/var/lib/postgresql/data/pg_hba.conf || "
+            f"echo 'host all all 0.0.0.0/0 scram-sha-256' >> /var/lib/postgresql/data/pg_hba.conf\""
+        )
+        log.info("pg_hba.conf host-all rule updated.")
 
         # Reload configuration
         run_ssh_command(
@@ -614,7 +627,15 @@ def get_cluster_details(db: Session, username: str, user_id: int, cluster_name: 
     lb_db = next((i for i in instances if i.role == "load_balancer"), None)
 
     if not primary_db:
-        raise RuntimeError("Primary database not found in cluster.")
+        # Orphaned rows — the cluster was partially deleted outside the API.
+        # Purge them so the user can re-provision, then return 404.
+        for inst in instances:
+            db.delete(inst)
+        db.commit()
+        raise FileNotFoundError(
+            f"Database cluster '{cluster_name}' has orphaned records (no primary found). "
+            "Stale records have been cleaned up — you can provision a new cluster now."
+        )
 
     _, _, p_vmid = db_manager.get_db_container_and_client(username, primary_db.container_id)
     p_ip = db_manager.get_vm_ip_by_id(p_vmid)
@@ -638,3 +659,71 @@ def get_cluster_details(db: Session, username: str, user_id: int, cluster_name: 
         replicas=replicas_resp,
         load_balancer=lb_resp
     )
+
+
+def delete_cluster(
+    db: Session,
+    username: str,
+    user_id: int,
+    cluster_name: str,
+) -> None:
+    """
+    Stop and remove all containers belonging to the cluster (best-effort),
+    then delete every DB row for the cluster so it can be re-provisioned.
+    """
+    instances = db.query(DBInstance).filter(
+        DBInstance.user_id == user_id,
+        DBInstance.cluster_name == cluster_name,
+    ).all()
+
+    if not instances:
+        raise FileNotFoundError(f"Database cluster '{cluster_name}' not found.")
+
+    # Remove each container best-effort (container may already be gone)
+    for inst in instances:
+        vm_ip = None
+        try:
+            client, container, vm_id = db_manager.get_db_container_and_client(username, inst.container_id)
+            if vm_id:
+                vm_ip = db_manager.get_vm_ip_by_id(vm_id)
+            if container:
+                container.remove(force=True)
+            if client:
+                try:
+                    client.close()
+                    client.api.adapters.clear()
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning(
+                "Could not remove container for instance '%s' (may already be gone): %s",
+                inst.instance_name, e
+            )
+
+        # Clean up directories on VM (volume/config)
+        if vm_ip:
+            if inst.role == "primary":
+                try:
+                    run_ssh_command(vm_ip, f"rm -rf /var/lib/postgresql/data-{cluster_name}-primary")
+                    log.info("Deleted volume directory for primary on VM %s", vm_ip)
+                except Exception as e:
+                    log.warning("Could not delete primary volume directory on VM %s: %s", vm_ip, e)
+            elif inst.role == "replica":
+                try:
+                    parts = inst.instance_name.split("-")
+                    rep_idx = parts[-1]
+                    run_ssh_command(vm_ip, f"rm -rf /var/lib/postgresql/data-{cluster_name}-replica-{rep_idx}")
+                    log.info("Deleted volume directory for replica-%s on VM %s", rep_idx, vm_ip)
+                except Exception as e:
+                    log.warning("Could not delete replica-%s volume directory on VM %s: %s", rep_idx, vm_ip, e)
+            elif inst.role == "load_balancer":
+                try:
+                    run_ssh_command(vm_ip, f"rm -rf /var/lib/haproxy-{cluster_name}")
+                    log.info("Deleted config directory for load balancer on VM %s", vm_ip)
+                except Exception as e:
+                    log.warning("Could not delete load balancer config directory on VM %s: %s", vm_ip, e)
+
+        db.delete(inst)
+
+    db.commit()
+    log.info("Cluster '%s' deleted for user '%s'.", cluster_name, username)

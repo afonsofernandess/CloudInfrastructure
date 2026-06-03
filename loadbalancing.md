@@ -241,6 +241,7 @@ The load balancer features are exposed under the `/loadbalancer` prefix in [rout
 | **POST** | `/loadbalancer/databases/cluster` | `DBClusterProvisionRequest` | Provision Primary + Standby Replicas + HAProxy Load Balancer |
 | **POST** | `/loadbalancer/databases/cluster/{cluster_name}/scale` | `replicas` (Query Param) | Scale read-replicas count and gracefully reload HAProxy config |
 | **GET** | `/loadbalancer/databases/cluster/{cluster_name}` | *None* | Retrieve DB cluster status, replica health, and HAProxy ports |
+| **DELETE** | `/loadbalancer/databases/cluster/{cluster_name}` | *None* | Terminate and clean up all primary, replica, and HAProxy containers, delete their data/config directories on the VMs, and purge SQLite database records |
 
 ---
 
@@ -303,10 +304,17 @@ Runs a full scale-up → scale-down lifecycle test against the native container 
    If `avg_cpu=0.0%`, the server was not restarted and is still using the old single-snapshot code.
 
 ### E. Resource Cleanup
-Because database clusters are left running after tests for inspection, you can clean up all database cluster containers, data directories, and SQLite database records using the cleanup script:
-```bash
-PYTHONPATH=. python scripts/cleanup_db_cluster.py
-```
+Because database clusters are left running after tests for inspection, you can clean up all database cluster containers, data/config directories on the VMs, and SQLite database records using any of the following methods:
+
+1. **Via the dashboard**: Click the **Delete Cluster** button next to the primary or load balancer row in the Databases tab.
+2. **Via the API**: Send a `DELETE` request to the cluster endpoint:
+   ```bash
+   curl -X DELETE http://localhost:8000/loadbalancer/databases/cluster/{cluster_name} -H "Authorization: Bearer <token>"
+   ```
+3. **Via the cleanup script**:
+   ```bash
+   PYTHONPATH=. python scripts/cleanup_db_cluster.py
+   ```
 
 ---
 
