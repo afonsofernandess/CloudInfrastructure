@@ -248,6 +248,27 @@ pip install pyone fastapi uvicorn "python-jose[cryptography]" "passlib[bcrypt]" 
 curl -s https://dl.min.io/server/minio/release/linux-amd64/minio -o ~/minio && chmod +x ~/minio
 ```
 
+**Environment Configuration (`.env`):**
+
+Create a `.env` file in the project root directory and define the required configuration variables for OpenNebula, the SSH Gateway tunnel, and MinIO storage:
+
+```ini
+ONE_USER = "oneadmin"
+ONE_PASSWORD = "your_oneadmin_password" 
+
+# SSH Gateway details for VM command execution
+GATEWAY_IP = "gateway_host_or_ip" 
+GATEWAY_PORT = 22
+GATEWAY_USER = "gateway_username"
+GATEWAY_PASSWORD = "gateway_password"
+
+# MinIO Object Storage Configuration
+MINIO_ENDPOINT = "localhost:9002"
+MINIO_ACCESS = "minioadmin"
+MINIO_SECRET = "minioadmin123"
+MINIO_SECURE = "False"
+```
+
 ---
 
 ## 4. Starting the API Server
