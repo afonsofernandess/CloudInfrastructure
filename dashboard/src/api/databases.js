@@ -40,3 +40,8 @@ export async function deleteCluster(clusterName) {
 export async function restartDB(id) {
   await client.post(`/databases/${id}/restart`)
 }
+
+export async function scaleCluster(clusterName, replicas) {
+  const res = await client.post(`/loadbalancer/databases/cluster/${clusterName}/scale?replicas=${replicas}`)
+  return res.data
+}

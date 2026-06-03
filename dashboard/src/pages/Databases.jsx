@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Database, Plus, Key, Trash2, Eye, EyeOff, Copy, Check, Activity, RotateCcw } from 'lucide-react'
-import { useDatabases, useProvisionDB, useDeprovisionDB, useDeleteCluster, useRestartDB } from '../hooks/useDatabases'
+import { Database, Plus, Key, Trash2, Eye, EyeOff, Copy, Check, Activity, RotateCcw, Sliders } from 'lucide-react'
+import { useDatabases, useProvisionDB, useDeprovisionDB, useDeleteCluster, useRestartDB, useScaleCluster } from '../hooks/useDatabases'
 import { useVMs } from '../hooks/useVMs'
 import Modal from '../components/shared/Modal'
 import ConfirmDialog from '../components/shared/ConfirmDialog'
@@ -234,11 +234,14 @@ export default function Databases() {
   const deprovision = useDeprovisionDB()
   const deleteClusterMutation = useDeleteCluster()
   const restart = useRestartDB()
+  const scaleClusterMutation = useScaleCluster()
 
   const [showProvisionModal, setShowProvisionModal] = useState(false)
   const [credentialsDB, setCredentialsDB] = useState(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [confirmDeleteClusterName, setConfirmDeleteClusterName] = useState(null)
+  const [scaleClusterName, setScaleClusterName] = useState(null)
+  const [scaleReplicasCount, setScaleReplicasCount] = useState(1)
   const [form, setForm] = useState({ name: '', db_name: '', is_cluster: false, replicas: 1 })
   const [selectedVmId, setSelectedVmId] = useState('')
   const queryClient = useQueryClient()
@@ -451,13 +454,28 @@ export default function Databases() {
                         </button>
                         {db.cluster_name ? (
                           (db.role === 'primary' || db.role === 'load_balancer') && (
-                            <button
-                              onClick={() => setConfirmDeleteClusterName(db.cluster_name)}
-                              className="p-1.5 rounded text-red-400 hover:bg-red-500/10 transition-colors"
-                              title="Delete Cluster"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            <>
+                              <button
+                                onClick={() => {
+                                  setScaleClusterName(db.cluster_name);
+                                  const currentReplicas = databases?.filter(
+                                    (d) => d.cluster_name === db.cluster_name && d.role === 'replica'
+                                  ).length || 1;
+                                  setScaleReplicasCount(currentReplicas);
+                                }}
+                                className="p-1.5 rounded text-indigo-400 hover:bg-indigo-500/10 transition-colors"
+                                title="Scale Cluster"
+                              >
+                                <Sliders className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteClusterName(db.cluster_name)}
+                                className="p-1.5 rounded text-red-400 hover:bg-red-500/10 transition-colors"
+                                title="Delete Cluster"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </>
                           )
                         ) : (
                           <button
@@ -681,6 +699,64 @@ export default function Databases() {
         confirmLabel="Delete Cluster"
         danger
       />
+
+      {/* Scale Cluster Modal */}
+      <Modal
+        isOpen={scaleClusterName != null}
+        onClose={() => setScaleClusterName(null)}
+        title="Scale Database Cluster"
+        maxWidth="max-w-md"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            scaleClusterMutation.mutate(
+              { clusterName: scaleClusterName, replicas: scaleReplicasCount },
+              {
+                onSuccess: () => {
+                  setScaleClusterName(null);
+                },
+              }
+            );
+          }}
+          className="space-y-4"
+        >
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5 font-outfit">
+              Target Replica Count
+            </label>
+            <input
+              type="number"
+              min="1"
+              max="5"
+              value={scaleReplicasCount}
+              onChange={(e) => setScaleReplicasCount(parseInt(e.target.value, 10) || 1)}
+              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none w-full text-sm font-mono"
+              required
+            />
+            <span className="text-[10px] text-slate-500 block mt-1">
+              Enter the target number of read replicas. The cluster will scale up or down to match this number.
+            </span>
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setScaleClusterName(null)}
+              className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={scaleClusterMutation.isPending}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+            >
+              {scaleClusterMutation.isPending ? 'Scaling…' : 'Scale'}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   )
 }

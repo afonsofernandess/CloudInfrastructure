@@ -133,7 +133,13 @@ In constrained environment VMs (e.g., 218MB RAM), the default HAProxy container 
 When database clusters are provisioned, there is a delay before the primary container starts accepting socket queries. Attempting to create the `replicator` role or update configurations immediately causes silent database query failure.
 To avoid this race condition, the system runs a polling loop using the PostgreSQL tool `pg_isready` to block progress until the database is fully ready to accept connections before running setup commands.
 
-#### G. Sample Configuration File (`haproxy.cfg`)
+#### G. Self-Healing Dynamic Port Synchronization on Container Restart
+In a cloud environment where database containers use dynamic host port bindings, restarting a container can cause Docker to assign a new random port on the VM host. To prevent this from breaking connectivity or leaving stale port records:
+* **Port Auto-Recovery:** Upon triggering a container restart, the platform automatically queries the Docker engine on the target VM to retrieve the newly assigned host ports (both the standard port and read-only port).
+* **Metadata Sync:** The database schema updates these new port numbers in the SQLite metadata storage (`cloud.db`) automatically.
+* **Credentials Sync:** The load balancer configuration is updated to map database connections using the correct active credentials, preventing blank-password or wrong-port failures.
+
+#### H. Sample Configuration File (`haproxy.cfg`)
 ```haproxy
 global
     log stdout format raw local0

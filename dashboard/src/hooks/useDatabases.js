@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useIsMutating } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { listDatabases, provisionDB, deprovisionDB, deleteCluster, restartDB } from '../api/databases'
+import { listDatabases, provisionDB, deprovisionDB, deleteCluster, restartDB, scaleCluster } from '../api/databases'
 
 const toastStyle = { style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }
 
@@ -92,6 +92,20 @@ export function useRestartDB() {
     onSuccess: () => {
       queryClient.refetchQueries({ queryKey: ['databases'] })
       toast.success('Container restart initiated', toastStyle)
+    },
+    onError: (err) => {
+      toast.error(err.response?.data?.detail || err.message, toastStyle)
+    },
+  })
+}
+
+export function useScaleCluster() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ clusterName, replicas }) => scaleCluster(clusterName, replicas),
+    onSuccess: () => {
+      queryClient.refetchQueries({ queryKey: ['databases'] })
+      toast.success('Database cluster scaled successfully', toastStyle)
     },
     onError: (err) => {
       toast.error(err.response?.data?.detail || err.message, toastStyle)
