@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Database, Plus, Key, Trash2, Eye, EyeOff, Copy, Check, Activity } from 'lucide-react'
-import { useDatabases, useProvisionDB, useDeprovisionDB, useDeleteCluster } from '../hooks/useDatabases'
+import { Database, Plus, Key, Trash2, Eye, EyeOff, Copy, Check, Activity, RotateCcw } from 'lucide-react'
+import { useDatabases, useProvisionDB, useDeprovisionDB, useDeleteCluster, useRestartDB } from '../hooks/useDatabases'
 import { useVMs } from '../hooks/useVMs'
 import Modal from '../components/shared/Modal'
 import ConfirmDialog from '../components/shared/ConfirmDialog'
@@ -233,6 +233,7 @@ export default function Databases() {
   const provision = useProvisionDB()
   const deprovision = useDeprovisionDB()
   const deleteClusterMutation = useDeleteCluster()
+  const restart = useRestartDB()
 
   const [showProvisionModal, setShowProvisionModal] = useState(false)
   const [credentialsDB, setCredentialsDB] = useState(null)
@@ -439,6 +440,14 @@ export default function Databases() {
                           title="Credentials"
                         >
                           <Key className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => restart.mutate(db.id)}
+                          disabled={restart.isPending}
+                          className="p-1.5 rounded text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-50"
+                          title="Restart Container"
+                        >
+                          <RotateCcw className={clsx("w-4 h-4", restart.isPending && restart.variables === db.id && "animate-spin")} />
                         </button>
                         {db.cluster_name ? (
                           (db.role === 'primary' || db.role === 'load_balancer') && (

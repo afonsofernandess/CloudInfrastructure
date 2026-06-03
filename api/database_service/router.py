@@ -181,6 +181,28 @@ def deprovision(
     db.commit()
 
 
+# POST /databases/{instance_id}/restart — restart database container
+@router.post("/{instance_id}/restart", status_code=status.HTTP_204_NO_CONTENT)
+def restart_instance(
+    instance_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    instance = db.query(DBInstance).filter(
+        DBInstance.id == instance_id,
+        DBInstance.user_id == current_user.id,
+    ).first()
+    if not instance:
+        raise HTTPException(status_code=404, detail="Database instance not found")
+
+    try:
+        db_manager.restart_db(current_user.username, instance.container_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to restart database: {e}")
+
+
 # GET /databases/{instance_id}/metrics — get database connection count & size metrics
 @router.get("/{instance_id}/metrics", response_model=DBMetricsResponse)
 def get_database_metrics(

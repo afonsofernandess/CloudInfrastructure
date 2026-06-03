@@ -278,6 +278,32 @@ def deprovision_db(username: str, container_id: str) -> None:
                 pass
 
 
+def restart_db(username: str, container_id: str) -> None:
+    """
+    Restart the database container.
+    Raises PermissionError if the container does not belong to the user.
+    """
+    client = None
+    try:
+        client, container, _ = get_db_container_and_client(username, container_id)
+        if not container:
+            raise FileNotFoundError("Database container not found (it may have been deleted)")
+
+        if container.labels.get(LABEL_KEY) != username:
+            raise PermissionError("Database instance does not belong to this user")
+
+        container.restart()
+    except Exception as e:
+        raise e
+    finally:
+        if client:
+            try:
+                client.close()
+                client.api.adapters.clear()
+            except Exception:
+                pass
+
+
 def get_db_metrics(username: str, container_id: str, db_user: str, db_name: str, db_password: str) -> dict:
     """Run queries inside the PostgreSQL container via Docker exec to fetch connection count and size."""
     import subprocess
