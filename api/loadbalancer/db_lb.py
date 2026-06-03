@@ -421,7 +421,7 @@ backend postgres_replicas
         existing_lb.container_id = container.id
         existing_lb.host_port = write_port
         existing_lb.read_host_port = read_port
-        existing_lb.db_password = ""
+        existing_lb.db_password = primary_db.db_password
         db.commit()
         db.refresh(existing_lb)
         return existing_lb
@@ -432,7 +432,7 @@ backend postgres_replicas
             instance_name=f"{cluster_name}-lb",
             db_name=primary_db.db_name,
             db_user=primary_db.db_user,
-            db_password="",
+            db_password=primary_db.db_password,
             host_port=write_port,
             read_host_port=read_port,
             role="load_balancer",

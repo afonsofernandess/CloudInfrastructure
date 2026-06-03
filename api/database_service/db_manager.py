@@ -278,7 +278,7 @@ def deprovision_db(username: str, container_id: str) -> None:
                 pass
 
 
-def restart_db(username: str, container_id: str) -> None:
+def restart_db(username: str, container_id: str) -> dict:
     """
     Restart the database container.
     Raises PermissionError if the container does not belong to the user.
@@ -293,6 +293,17 @@ def restart_db(username: str, container_id: str) -> None:
             raise PermissionError("Database instance does not belong to this user")
 
         container.restart()
+        container.reload()
+        
+        ports = container.ports
+        new_ports = {}
+        p5432 = ports.get("5432/tcp")
+        if p5432:
+            new_ports["host_port"] = int(p5432[0]["HostPort"])
+        p5433 = ports.get("5433/tcp")
+        if p5433:
+            new_ports["read_host_port"] = int(p5433[0]["HostPort"])
+        return new_ports
     except Exception as e:
         raise e
     finally:

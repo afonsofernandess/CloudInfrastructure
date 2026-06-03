@@ -196,7 +196,12 @@ def restart_instance(
         raise HTTPException(status_code=404, detail="Database instance not found")
 
     try:
-        db_manager.restart_db(current_user.username, instance.container_id)
+        new_ports = db_manager.restart_db(current_user.username, instance.container_id)
+        if "host_port" in new_ports:
+            instance.host_port = new_ports["host_port"]
+        if "read_host_port" in new_ports:
+            instance.read_host_port = new_ports["read_host_port"]
+        db.commit()
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
