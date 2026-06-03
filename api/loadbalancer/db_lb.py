@@ -589,7 +589,7 @@ def scale_cluster(
         r_ip = db_manager.get_vm_ip_by_id(r_vmid)
         replicas_resp.append(_build_db_response(r, "running", r_ip, r_vmid))
 
-    lb_resp = _build_db_response(lb_db, "running", primary_vm_ip, primary_vm_id) if lb_db else None
+    lb_resp = _build_db_response(lb_db, "running", lb_ip, lb_vmid) if lb_db else None
 
     return DBClusterResponse(
         cluster_name=cluster_name,

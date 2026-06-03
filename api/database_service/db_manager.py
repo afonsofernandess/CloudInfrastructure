@@ -7,6 +7,7 @@ cloud_db_user=<username> for per-user isolation.
 
 import secrets
 import string
+import threading
 import time
 import docker
 from docker.errors import NotFound
@@ -135,8 +136,9 @@ def provision_db(username: str, instance_name: str, db_name: str, vm_id: Optiona
             container.remove(force=True)
             raise RuntimeError(f"Failed to start PostgreSQL container: {e}") from e
 
-        # Wait up to 15 s for PostgreSQL to bind the port (it writes to logs when ready)
-        host_port = _wait_for_port(container, timeout=15)
+        # Wait up to 60 s for PostgreSQL to bind its port.
+        # 15 s was too short on cold VMs where the image may need to be pulled first.
+        host_port = _wait_for_port(container, timeout=60)
 
         return {
             "container_id": container.id,
@@ -179,15 +181,25 @@ def get_db_container_and_client(username: str, container_id: str):
     from concurrent.futures import ThreadPoolExecutor
     clients = get_all_clients(username)
     found = {"client": None, "container": None, "vm_id": None}
+    lock = threading.Lock()
 
     def check_vm(item):
         vm_id, client = item
         try:
             c = client.containers.get(container_id)
-            found["client"] = client
-            found["container"] = c
-            found["vm_id"] = vm_id
-            return True
+            with lock:
+                if found["container"] is None:
+                    # First thread to find the container wins
+                    found["client"] = client
+                    found["container"] = c
+                    found["vm_id"] = vm_id
+                    return True
+            # A different thread already won — close this client to avoid socket leaks
+            try:
+                client.close()
+                client.api.adapters.clear()
+            except Exception:
+                pass
         except Exception:
             try:
                 client.close()
