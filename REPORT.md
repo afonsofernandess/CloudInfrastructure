@@ -2,8 +2,9 @@
 
 **Academic Report**  
 *Course:* Cloud Infrastructure & Large-Scale Systems  
-*Authors:* Mestrado em Engenharia Informática  
+*Authors:* Mestrado em Segurança Informática 
 *Date:* June 2026  
+This md will be used as an reference to the actual latex report
 
 ---
 
