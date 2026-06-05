@@ -22,6 +22,16 @@ The platform implements a stateless container orchestration layer over multiple 
   ```
   Docker dynamically binds it to a random free host port (e.g., `32768`). The load balancer resolves these ports dynamically and maps traffic accordingly.
 
+```mermaid
+graph TD
+    User[Scale Request] --> Place[Worker Placement Scheduler]
+    Place --> VMQuery[Query Host Container Densities]
+    VMQuery --> MinVM[Select Active VM with MIN containers]
+    MinVM --> Boot[Create Worker Container]
+    Boot --> PortBind[Docker Bind container to host:random]
+    PortBind --> DynamicPort[Expose dynamically assigned Port e.g. 32768]
+```
+
 ---
 
 ## 2. Load Balancer Configuration (Nginx)
@@ -57,6 +67,22 @@ The load balancer directs external traffic round-robin to all worker instances.
    * Maps container port `80` to a random free host port.
    * Exposes the single load balancer address (e.g. `http://<VM_IP>:<LB_PORT>`) to the user.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant API as Scale Manager (FastAPI)
+    participant SFTP as SFTP Client
+    participant VM as Load Balancer VM (Nginx)
+    
+    API->>API: Resolve all worker host IPs and dynamic ports
+    API->>API: Generate nginx.conf template (upstream backend_servers)
+    API->>SFTP: SFTP upload nginx.conf to /var/lib/nginx-lb-groupname/nginx.conf
+    API->>VM: Stop/Remove old Nginx LB container
+    API->>VM: Start nginx:alpine container (Mount conf, expose random port)
+    VM-->>API: returns load balancer host port
+    API-->>Client: Returns Load Balancer URL: http://[VM_IP]:[LB_PORT]
+```
+
 ---
 
 ## 3. Worker Scaling Lifecycle
@@ -81,12 +107,49 @@ To spin up a read-replica container on a different VM, the system performs a net
 3. **Replication Config generation:** The `-R` option in `pg_basebackup` creates `standby.signal` and configures the `primary_conninfo` connection string.
 4. **Booting Standby:** The replica PostgreSQL container is launched, mounting the populated data directory. Since the backup created `standby.signal`, PostgreSQL automatically boots in read-only streaming replica mode.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant API as Scale Manager (FastAPI)
+    participant Primary as Primary DB VM
+    participant Replica as New Replica VM
+
+    API->>Primary: Execute SQL: Create 'replicator' role & config pg_hba.conf
+    API->>Primary: Reload PostgreSQL Configuration
+    API->>Replica: Run pg_basebackup container (Stream WAL files)
+    Primary-->>Replica: Network backup transfer
+    Note over Replica: Creates standby.signal & primary_conninfo
+    API->>Replica: Launch Replica container (Mount data directory)
+    Replica->>Primary: Open replication stream TCP connection
+    Primary-->>Replica: Continuous WAL Log Streaming
+```
+
 ### Real-Time Data Synchronization (WAL Streaming)
 Once a replica is booted, it stays updated dynamically:
 * **Write-Ahead Logging (WAL):** Every data-modifying operation on the Primary (`INSERT`, `UPDATE`, `DELETE`, table/schema changes) is written to a sequential log file known as the Write-Ahead Log (WAL).
 * **Streaming Protocol:** Standby replicas maintain a persistent TCP connection to the Primary database using the `replicator` account.
 * **Continuous Updates:** As WAL entries are written to disk on the Primary, they are immediately streamed to all connected standby replicas. The replicas read this stream and replay the changes in memory and on disk, mirroring data changes within milliseconds.
 
+```mermaid
+graph TD
+    Client[Client App] --> WritePort[Port 5432: Write Frontend]
+    Client --> ReadPort[Port 5433: Read Frontend]
+    
+    subgraph HAProxy Layer 4 Load Balancer
+        WritePort -->|Mode TCP| BackendWrite[Backend: Primary only]
+        ReadPort -->|Mode TCP / Round-Robin| BackendRead[Backend Pool]
+    end
+    
+    subgraph PostgreSQL Cluster
+        BackendWrite -->|Write / SQL| Primary[Primary Postgres VM 1]
+        Primary -->|WAL Streaming Sync| Replica1[Replica 1 Postgres VM 2]
+        Primary -->|WAL Streaming Sync| Replica2[Replica 2 Postgres VM 3]
+        
+        BackendRead -->|Read / SELECT| Primary
+        BackendRead -->|Read / SELECT| Replica1
+        BackendRead -->|Read / SELECT| Replica2
+    end
+```
 
 ### Deep-Dive: HAProxy Layer 4 TCP Load Balancing
 An HAProxy container (`haproxy:2.8-alpine`) is deployed on the same VM as the Primary database to route SQL connections.
@@ -106,6 +169,12 @@ To handle PostgreSQL operations safely, HAProxy exposes two frontends bound to d
   * **Target Backend:** Distributes traffic round-robin across a pool containing **both the Primary database and all Standby replicas**.
   * **Storage:** Tracked in the dedicated `read_host_port` column of the SQLite DB.
   * **Purpose:** Distributes heavy-read workloads (`SELECT` operations, analytical reports) evenly across all active VMs, preventing any single VM from becoming a bottleneck.
+
+> [!IMPORTANT]
+> **Developer Query Splitting Requirement:** Because HAProxy operates as a Layer 4 TCP proxy, it cannot parse SQL strings to separate writes from reads automatically. Application developers must handle this in their code by setting up two separate database connection engines:
+> * Route all writes (`INSERT`, `UPDATE`, `DELETE`, DDL) to the Primary port (mapped to HAProxy `5432`).
+> * Route all read-only queries (`SELECT`) to the replica load balancer port (mapped to HAProxy `5433`).
+
 
 #### C. Database Health Checking (`option tcp-check`)
 To guarantee high availability, HAProxy monitors backend database health using active TCP probes:
@@ -221,17 +290,20 @@ This guarantees a real measurement interval and accurate CPU readings even on co
 
 ### Scaling Decision Flow (per check cycle)
 
-```
-For each discovered scale group:
-  1. Skip if no_autoscale=true
-  2. Skip if group age < 60s (stabilization window)
-  3. Skip if last scale action < 30s ago (cooldown)
-  4. Measure CPU: take 2 stats snapshots (1s apart) per worker
-  5. avg_cpu = mean of all worker CPU readings
-  6. if avg_cpu > 70% AND replicas < 4  →  scale UP   (+1 replica)
-     if avg_cpu <  5% AND replicas > 1  →  scale DOWN (−1 replica)
-  7. Call scale_container_group() → spins up/down containers + reloads Nginx LB config
-  8. Record timestamp for cooldown
+```mermaid
+graph TD
+    Start[Autoscaler Wake Up: 10s] --> Discover[Query active VMs for Scale Groups]
+    Discover --> Filter[Filter Groups: Skip if no_autoscale=true]
+    Filter --> Stabilize{Group age >= 60s & Cooldown >= 30s?}
+    Stabilize -->|No| Skip[Skip Group]
+    Stabilize -->|Yes| Measure[Measure CPU: Take 2 snapshots 1s apart per worker]
+    Measure --> AvgCPU[Calculate Avg CPU across workers]
+    
+    AvgCPU --> UpCheck{Avg CPU > 70% & Replicas < 4?}
+    UpCheck -->|Yes| ScaleUp[Scale UP: +1 replica, reload Nginx conf]
+    UpCheck -->|No| DownCheck{Avg CPU < 5% & Replicas > 1?}
+    DownCheck -->|Yes| ScaleDown[Scale DOWN: -1 replica, drain & reload Nginx conf]
+    DownCheck -->|No| Idle[No action]
 ```
 
 ---
