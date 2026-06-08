@@ -38,6 +38,39 @@ graph TD
 3. **Workload-based Autoscaling:** A background thread monitors active VMs. If average CPU utilization exceeds the scale-up threshold, it claims a prewarmed VM (or boots one from scratch). If utilization drops, it shuts down idle VMs after a cooldown window.
 4. **User Inactivity Power Management (Scale to Zero):** If a user performs no API calls for 2 hours, the system suspends (powers off) their active VMs to conserve hypervisor resources. As soon as the user logs back in or queries the API, their VMs are automatically resumed.
 
+### VM Provisioning Flowchart (Standby Pool vs. Cold Boot)
+
+```mermaid
+graph TD
+    Start[User Requests VM Provisioning] --> Auth[Authenticate Tenant Request]
+    Auth --> CheckStandby{Is a pre-warmed VM available in the pool?}
+
+    %% Pre-warmed Path
+    CheckStandby -->|Yes: Sub-second Provisioning| Claim[1. Identify pre-warmed-vm-XXXX in ACTIVE state]
+    Claim --> Rename[2. Rename VM to tenant-requested name]
+    Rename --> Chown[3. Change owner in OpenNebula to user_id]
+    Chown --> RecordDB[4. Save VMInstance in local SQLite database]
+    RecordDB --> TriggerReplenish[5. Trigger background thread to replenish Standby Pool]
+    TriggerReplenish --> ReturnPre[Return VM Info to User < 1s]
+
+    %% Cold Boot Path
+    CheckStandby -->|No: Standard Allocation| Allocate[1. Call client.vm.allocate in OpenNebula]
+    Allocate --> CloneDisk[2. Clone Base Image Datablock]
+    CloneDisk --> BootVM[3. Hypervisor Boots VM]
+    BootVM --> Context[4. Mount Context ISO for networking]
+    Context --> PollState[5. Poll LCM_STATE until RUNNING ~90s]
+    PollState --> RecordDB
+    RecordDB --> ReturnCold[Return VM Info to User ~90-110s]
+
+    %% Replenishment Sub-process
+    subgraph "Standby Pool Replenishment (Background)"
+        TriggerReplenish -.-> CheckCount{Total VMs < MAX_VMS?}
+        CheckCount -->|Yes| CreatePre[Create new prewarmed-vm under oneadmin]
+        CreatePre -.-> BootPre[Pre-boots and waits in ACTIVE state for next request]
+        CheckCount -->|No| Idle[Do nothing]
+    end
+```
+
 ---
 
 ## 2. Low-level VM Bootstrap & Docker Provisioning

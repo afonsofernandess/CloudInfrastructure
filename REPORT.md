@@ -131,50 +131,62 @@ The cloud manager backend was developed by building a Python environment and rou
 
 #### 2.3.2 Selected Tests
 
-The following integration and lifecycle validation tests were implemented to verify cloud operations:
+To validate the reliability, performance, and functionality of the custom cloud management system, we implemented a comprehensive automated test suite inside the `scripts/` directory:
 
-1.  **OpenNebula Basic Connectivity (`scripts/test_connection.py`):**
-    Queries the OpenNebula RPC endpoint. Verifies that credentials are authenticated, lists the available VM templates, active VMs, datastores, and hypervisor hosts.
-2.  **User Authentication & Security (`api/auth/router.py`):**
-    Tests the complete user CRUD cycle. When registering a user, the backend allocates a corresponding user in OpenNebula (`client.user.allocate`). On login, credentials are verified locally via Bcrypt hashes, generating a 24-hour JWT token. Profiles updates (emails, passwords, SSH keys) are mirrored to OpenNebula's template structures.
-3.  **Elastic Compute & Autoscaler (`scripts/test_autoscaler.py`):**
-    Verifies that the `AutoScaler` background thread checks cluster load every 30 seconds.
-    *   **Scale-Up:** Simulates heavy CPU load on worker VMs. The scaler detects avg CPU > 70%, claims a pre-warmed VM (or provisions a new one), and hooks it into the cluster.
-    *   **Scale-Down:** Simulates load drops (avg CPU < 20%). The scaler performs a container drain check over SSH, waits for the 2-minute cooldown window, and destroys the idle VM (`terminate-hard`).
-    *   **Scale-to-Zero:** Verifies that inactive user VMs are powered off (`poweroff-hard`) after 2 hours of API inactivity and automatically resumed when the user makes a profile query.
-4.  **Dynamic Disk Allocation & Mounting (`scripts/test_disks.py` & `scripts/test_disk_actions.py`):**
-    *   Allocates a raw empty datablock in OpenNebula.
-    *   Performs a hot-plug attach to an active VM.
-    *   Connects to the VM terminal, executes partition formatting (`mkfs.ext4 /dev/vdb`), mounts it to `/mnt/`, and configures boot mounts in `/etc/fstab`.
-    *   Performs hot-unplug detachment.
-5.  **Multi-Tenant S3 Object Storage (`api/storage/minio_client.py`):**
-    Tests file uploads, directory listings, downloads, and deletions. Verifies that buckets named `user-{username}` are created dynamically and block cross-tenant file access.
-6.  **Layer 4 Clustered Database Provisioning (`scripts/test_haproxy.py`):**
-    Spins up a Primary Postgres container on VM 1 and Read-replicas on VM 2/3.
-    *   Executes physical synchronization from the Primary using a temporary `pg_basebackup` container.
-    *   Sets up streaming replication using Write-Ahead Logging (WAL) logs.
-    *   Deploys an HAProxy container on the Primary host VM with dual-port routing: Write traffic is directed to port `5432` (Primary only), and Read traffic is balanced round-robin across port `5433` (Primary + all active Replicas).
-    *   Executes write transactions through port 5432, verifies replication on standby nodes, and queries port 5433 to test round-robin load distribution.
+1.  **OpenNebula Connection Integrity (`scripts/test_connection.py`):**
+    This test verifies connection and authentication with the OpenNebula XML-RPC endpoint (`oned`). It queries the cloud manager daemon to fetch active hypervisor hosts, system datastores, and VM template configurations to ensure credentials in the `.env` file are fully authorized.
+2.  **User Authentication and Authorization Lifecycle (`api/auth/router.py`):**
+    Validates user creation, secure login, and JWT access token issuance. Registration logic is verified to ensure user allocations are mirrored in OpenNebula (`client.user.allocate`). Profile update operations (changing email, password, or SSH public keys) are tested to ensure they are synchronized with the corresponding OpenNebula user templates.
+3.  **Elastic Compute & Autoscaling Test (`scripts/test_autoscaler.py`):**
+    Validates load-reactive scaling:
+    *   **Scale-Up:** Deploys an Nginx web worker container group with high compression configured (`gzip_comp_level 9`) and starts a multi-threaded HTTP flood tool to hammer the endpoint. The autoscaler background thread monitors worker CPU load; once average CPU utilization exceeds $70\%$, the autoscaler claims a pre-warmed VM from the standby pool, configures it, and hooks it into the cluster to balance load.
+    *   **Scale-Down:** Upon terminating the HTTP flood, average CPU utilization drops below $20\%$. The autoscaler waits for the 120-second cooldown period (to prevent scaling oscillations/flapping) before running a container drain sequence and hard-terminating the idle VM.
+4.  **Scale-to-Zero & Wake-on-API Test (`scripts/test_scale_to_zero.py`):**
+    Evaluates the energy-saving inactivity policy. The test temporarily overrides the inactivity timeout to 5 seconds. By modifying the user's `last_active_at` timestamp to simulate inactivity, it verifies that the autoscaler suspends or powers off the user's VM. It then simulates user activity (such as an API request) and verifies that the VM automatically resumes state (wake-on-API) before serving the request.
+5.  **Block Storage Hot-Plugging Test (`scripts/test_disks.py` & `scripts/test_disk_actions.py`):**
+    Validates block storage attachment:
+    *   Creates a raw 1GB disk image in the OpenNebula datastore.
+    *   Initiates a live hot-plug attach to an active tenant VM.
+    *   Establishes an SSH connection to the guest VM to format the disk block (`mkfs.ext4 /dev/vdb`), creates a local mount directory, mounts the volume, and writes a test file.
+    *   Verifies that the disk can be hot-unplugged and detached successfully without halting the VM.
+6.  **Multi-Tenant S3 Object Storage Test (`api/storage/minio_client.py`):**
+    Tests file uploads, downloads, listings, and deletions against the S3-compatible MinIO backend. It ensures that tenant-isolated buckets named `user-{username}` are dynamically generated and that cross-tenant access is strictly blocked.
+7.  **Clustered Database & HAProxy L4 Balancing (`scripts/test_haproxy.py` & `scripts/test_db_cluster.py`):**
+    Verifies the deployment of a clustered database with streaming replication and dual-port query routing:
+    *   **Test 1 (Write Constraint):** Ensures write queries succeed when directed to HAProxy's write-port (5432) pointing to the primary database, and fail with a "read-only transaction" error when issued directly against replicas.
+    *   **Test 2 (Replication Propagation):** Inserts a test row via the primary database and verifies that Write-Ahead Logging (WAL) replicates the record to all standby nodes immediately.
+    *   **Test 3 (Read Load Balancing):** Executes concurrent `SELECT` queries through HAProxy's read-port (5433) and verifies that queries are distributed across the database nodes in a round-robin fashion by capturing the responding container IPs.
 
 ---
 
 #### 2.3.3 Evaluation/Assessment Metrics
 
-##### Metric A: VM Provisioning Latency (Standby Pool Efficiency)
-The platform evaluates the time elapsed from a provisioning request to a fully reachable VM state.
-*   **Cold Boot Latency:** Provisioning a VM from scratch (cloning disk, allocating resources, booting OS, waiting for `one-context` network configurations) takes an average of **85 to 110 seconds**.
-*   **Standby Pool Latency:** By keeping a standby VM (`prewarmed-vm-`) pre-booted under `oneadmin` ownership, scaling up simply requires renaming and changing VM ownership (`client.vm.chown`). This drops provisioning latency to **less than 1 second** ($0.8\text{s}$).
+We evaluated the performance, resource efficiency, and carbon footprint of our implementation using three core metrics:
 
-##### Metric B: API Throughput Speed (Parallel vs. Sequential Probing)
-Because the API backend must connect to remote VM Docker Engines over SSH tunnels to check container states, sequential loops accumulate network round-trip delays:
-*   **Sequential Latency:** Querying 3 VMs one by one takes around **3.42 seconds**.
-*   **Parallel Latency:** Utilizing Python's `ThreadPoolExecutor` to run threads concurrently reduces the wait time to **1.15 seconds** ($\approx 3\text{x}$ performance speedup), maintaining a responsive REST API.
+##### Metric A: VM Provisioning Latency (Cold Boot vs. Standby Pool)
+This metric measures the time elapsed from the initial API provisioning request until the VM is booted, network-configured, and fully reachable via SSH.
+*   **Cold Boot Latency:** Provisioning a VM from scratch (cloning the disk, allocating the host, booting the guest kernel, and running the `one-context` configuration) takes an average of **85 to 110 seconds**.
+*   **Pre-Warmed Standby Pool Latency:** By keeping an idle VM pre-booted under `oneadmin` ownership, scaling up simply renames the VM and changes its owner (`client.vm.chown`) to the requesting tenant. This reduces provisioning latency to **less than 1 second** ($0.8\text{s}$).
+
+| Provisioning Method | Average Latency (seconds) | Provisioning Behavior |
+| :--- | :---: | :--- |
+| **Cold Boot (Scratch)** | 97.5s | Disk clone + kernel boot + context initialization |
+| **Pre-Warmed Standby** | 0.8s | Owner transfer (`chown`) + dynamic renaming |
+
+##### Metric B: API Probing Latency (Sequential vs. Parallel Monitoring)
+To collect CPU and memory load metrics from tenant container nodes, the API server must communicate with the Docker daemon running inside each active VM over SSH.
+*   **Sequential Monitoring:** Iterating through active VMs sequentially accumulates network round-trip delays and SSH handshake overhead. For 3 VMs, this takes an average of **3.42 seconds**.
+*   **Parallel Monitoring:** Utilizing Python's `ThreadPoolExecutor` to probe the active VMs concurrently reduces the monitoring loop duration to **1.15 seconds** (a $\approx 3\text{x}$ performance speedup), maintaining backend responsiveness.
 
 ##### Metric C: Energy and Carbon Savings Proxy
-The platform tracks cumulative active VM hours and computes energy saved against a static host baseline (which assumes the maximum capacity of `MAX_VMS = 5` is kept running continuously):
-*   $$\text{Hours Saved} = \text{Baseline Capacity Hours} - \sum (\text{Active VM runtimes})$$
-*   $$\text{Energy Saved (kWh)} = \frac{\text{Hours Saved} \times 50\text{W (Average VM power draw)}}{1000}$$
-*   $$\text{CO2 Saved (kg)} = \text{Energy Saved (kWh)} \times 0.4\text{kg/kWh (grid emission factor)}$$
+To measure the ecological impact of the scale-to-zero policy, we estimate the saved energy and carbon footprint compared to a baseline where all resources are kept active continuously:
+*   **Active VM Run Hours:** Sum of runtime for all VMs belonging to active users.
+*   **Baseline Capacity Hours:** Assumes the maximum capacity of VMs ($N_{\text{max}} = 5$) runs 24/7.
+*   **Energy Savings Formula:**
+    $$\text{Hours Saved} = (N_{\text{max}} \times \text{Elapsed Hours}) - \sum (\text{Active VM runtimes})$$
+    $$\text{Energy Saved (kWh)} = \frac{\text{Hours Saved} \times P_{\text{avg}}}{1000}$$
+    $$\text{CO}_2\text{ Saved (kg)} = \text{Energy Saved (kWh)} \times EF$$
+    where $P_{\text{avg}} = 50\text{W}$ (estimated average physical host power allocation per active VM) and $EF = 0.4\text{ kg/kWh}$ (average electricity grid carbon emission factor). Under typical student workload patterns, scaling idle VMs to zero yields significant energy reductions.
 
 ---
 

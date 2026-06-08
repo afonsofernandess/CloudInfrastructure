@@ -54,11 +54,11 @@ When a user requests to provision a database instance:
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor Client
+    participant Client
     participant API as FastAPI Backend
     participant DB as SQLite DB
     participant VM as Remote VM (Docker)
+    autonumber
 
     Client->>API: POST /databases {name, db_name, vm_id}
     API->>VM: Ensure VM is running and Docker is reachable
@@ -96,11 +96,11 @@ Since database instances are deployed inside private cloud networks (`172.16.100
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor Client
+    participant Client
     participant API as FastAPI Backend
     participant DB as SQLite DB
     participant VM as Remote VM (Docker)
+    autonumber
 
     Client->>API: GET /databases/{id}/metrics
     API->>DB: Fetch DB credentials and VM IP
@@ -121,11 +121,11 @@ Deprovisioning completely tears down the database container but keeps data files
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor Client
+    participant Client
     participant API as FastAPI Backend
     participant DB as SQLite DB
     participant VM as Remote VM (Docker)
+    autonumber
 
     Client->>API: DELETE /databases/{id}
     API->>DB: Fetch DBInstance record
@@ -249,4 +249,64 @@ def fetch_items():
 
 > [!CAUTION]
 > If a query modifying state (e.g., `INSERT` or `UPDATE`) is sent to the read port (`5433`), the replica VM handling the connection will reject it, throwing: `ERROR: cannot execute INSERT in a read-only transaction`.
+
+---
+
+## 7. Clustered PostgreSQL with Streaming Replication
+
+Beyond standalone databases, the platform supports provisioning a multi-node PostgreSQL cluster with high availability and read-scaling.
+
+### A. Cluster Replication Provisioning Flow
+When a user requests a cluster via the API:
+1. **Primary Node:** Instantiates a database container acting as the primary read/write node.
+2. **Replication Permissions:** Adds a replication user (`replicator`) and appends authorization rules to `pg_hba.conf` on the primary, followed by a configuration reload.
+3. **Standby Replica Cloning:** Launches a temporary `pg_basebackup` container on each replica host to clone the primary's data directory over the network. This process automatically generates `standby.signal` and `primary_conninfo` files in the database directory.
+4. **Hot-Standby Startup:** Starts the replica PostgreSQL container, mounting the cloned directory. Detecting `standby.signal`, it starts in read-only streaming standby mode.
+5. **Load Balancer (HAProxy) deployment:** Deploys an HAProxy container on the primary VM configured as a Layer 4 TCP proxy to route database requests.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as FastAPI Backend
+    participant Primary as Primary VM (Docker)
+    participant Replica as Replica VM (Docker)
+    autonumber
+
+    API->>Primary: Create role 'replicator' & update pg_hba.conf
+    API->>Primary: Reload Postgres Configuration
+    API->>Replica: Run temporary pg_basebackup container
+    Replica->>Primary: Pull physical data files over network
+    Primary-->>Replica: Transfer completed
+    Note over Replica: Creates standby.signal & primary_conninfo
+    API->>Replica: Launch official replica container (Mount data folder)
+    Replica->>Primary: Establish replication stream
+    Primary-->>Replica: Continuous WAL Log Streaming
+```
+
+### B. Dual-Port Query Splitting (HAProxy Routing)
+HAProxy is configured in Layer 4 TCP mode to route binary database connections based on two dedicated frontends:
+* **Port 5432 (Write Frontend):** Directly forwards TCP traffic to the Primary node (Write-active).
+* **Port 5433 (Read Frontend):** Distributes TCP traffic in a round-robin pool across the Primary and all Standby replicas.
+
+```mermaid
+graph TD
+    Client[Application Client] -->|Writes: Port 5432| WritePort[HAProxy Write Port]
+    Client -->|Reads: Port 5433| ReadPort[HAProxy Read Port]
+
+    subgraph "HAProxy L4 TCP Proxy (Primary Host VM)"
+        WritePort -->|Direct Forward| PrimaryBackend[Primary DB Node]
+        ReadPort -->|Round-Robin Balance| ReadPool[Read Node Pool]
+    end
+
+    subgraph "PostgreSQL Cluster Nodes"
+        PrimaryBackend -->|SQL writes| PrimaryDB[(Primary Postgres VM 1)]
+        ReadPool -->|SQL SELECT| PrimaryDB
+        ReadPool -->|SQL SELECT| Replica1[(Replica 1 Postgres VM 2)]
+        ReadPool -->|SQL SELECT| Replica2[(Replica 2 Postgres VM 3)]
+        
+        PrimaryDB -->|WAL Log Sync| Replica1
+        PrimaryDB -->|WAL Log Sync| Replica2
+    end
+```
+
 
