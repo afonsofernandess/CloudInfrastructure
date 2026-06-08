@@ -127,6 +127,17 @@ The cloud manager backend was developed by building a Python environment and rou
     python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
     ```
 
+6.  **Configure Tenant SSH Credentials via Dashboard / User Settings:**
+    To enable virtual machine provisioning and remote service management, the tenant user must generate an SSH key pair on their local machine and register the public key in their user settings:
+    ```bash
+    # Generate an SSH key pair (Ed25519 is recommended for security and speed)
+    ssh-keygen -t ed25519 -C "your_email@example.com" -f ~/.ssh/id_cloudinfra
+    
+    # Copy the generated public key
+    cat ~/.ssh/id_cloudinfra.pub
+    ```
+    Paste the public key into the user settings page on the Dashboard web UI. The cloud manager API automatically synchronizes this key with the user's template in OpenNebula. When a new VM is provisioned, this public key is automatically injected via the `one-context` package, allowing the API backend (via Paramiko/SSH) and the user to log in and securely orchestrate Docker and database containers.
+
 ---
 
 #### 2.3.2 Selected Tests

@@ -202,6 +202,52 @@ def restart_instance(
         if "read_host_port" in new_ports:
             instance.read_host_port = new_ports["read_host_port"]
         db.commit()
+
+        # If this database instance is part of a cluster, synchronize HAProxy & replication settings
+        if instance.cluster_name:
+            try:
+                # Refresh data from DB
+                db.refresh(instance)
+                
+                # Find all cluster members
+                cluster_instances = db.query(DBInstance).filter(
+                    DBInstance.cluster_name == instance.cluster_name
+                ).all()
+                primary_db = next((r for r in cluster_instances if r.role == "primary"), None)
+                replicas = [r for r in cluster_instances if r.role == "replica"]
+                lb_db = next((r for r in cluster_instances if r.role == "load_balancer"), None)
+
+                if lb_db and primary_db:
+                    from api.loadbalancer.db_lb import deploy_haproxy_lb
+                    from api.database_service.db_manager import get_user_vm_ip
+                    lb_ip = get_user_vm_ip(current_user.username, lb_db.vm_id)
+                    deploy_haproxy_lb(
+                        db=db,
+                        username=current_user.username,
+                        user_id=current_user.id,
+                        cluster_name=instance.cluster_name,
+                        primary_db=primary_db,
+                        replicas=replicas,
+                        lb_vm_id=lb_db.vm_id,
+                        lb_vm_ip=lb_ip
+                    )
+
+                    # If we restarted the primary node, update WAL connection info on the replica nodes
+                    if instance.role == "primary" and "host_port" in new_ports:
+                        primary_vm_ip = get_user_vm_ip(current_user.username, primary_db.vm_id)
+                        from api.compute.autoscaler import autoscaler
+                        from api.database import engine
+                        autoscaler._fix_replica_wal_conninfo(
+                            cluster_name=instance.cluster_name,
+                            new_primary_port=new_ports["host_port"],
+                            primary_vm_ip=primary_vm_ip,
+                            db_path=engine.url.database
+                        )
+            except Exception as lb_err:
+                import logging
+                logging.getLogger("databases.router").warning(
+                    f"Failed to synchronize database cluster after restart: {lb_err}"
+                )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
