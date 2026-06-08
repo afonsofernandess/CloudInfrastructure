@@ -67,6 +67,24 @@ The load balancer directs external traffic round-robin to all worker instances.
    * Maps container port `80` to a random free host port.
    * Exposes the single load balancer address (e.g. `http://<VM_IP>:<LB_PORT>`) to the user.
 
+### Traffic Flow Topology (HTTP Proxying)
+Incoming client HTTP requests target the Nginx load balancer VM, which dynamically exposes a random host port mapped to the Nginx internal port `80`. Nginx then distributes the traffic sequentially (round-robin) across the pool of active worker containers.
+
+```mermaid
+graph TD
+    Client[Client Browser / App] -->|HTTP Request| LBPort[Nginx LB Port e.g. 32770]
+    
+    subgraph Nginx Load Balancer Container
+        LBPort -->|Round-Robin Distribution| Upstream[Upstream Backend Pool]
+    end
+    
+    subgraph Worker Nodes
+        Upstream -->|Proxy Pass| Worker0[Worker 0 container on VM 1: Port 32805]
+        Upstream -->|Proxy Pass| Worker1[Worker 1 container on VM 2: Port 32812]
+        Upstream -->|Proxy Pass| Worker2[Worker 2 container on VM 2: Port 32819]
+    end
+```
+
 ```mermaid
 sequenceDiagram
     autonumber
