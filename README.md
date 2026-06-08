@@ -970,17 +970,6 @@ cp dashboard/.env.example dashboard/.env
 
 ---
 
-## 13. Implemented Services Roadmap
 
-| Phase | Service | Status |
-|-------|---------|--------|
-| 1 | OpenNebula connection + test script | Done |
-| 2 | User registration, login, JWT auth, account management | Done |
-| 3 | Elastic compute — VM provisioning + auto-scaler | Done |
-| 4 | Disk storage — MinIO object storage & OpenNebula custom disks | Done |
-| 5 | Container service — Docker on demand | Done |
-| 6 | Database service — PostgreSQL on demand (DBaaS) | Done |
-| 7 | SLA + energy saving (scale-to-zero) | Done |
-| 8 | Tests + evaluation metrics + report | In Progress (Test scripts written) |
 
 
