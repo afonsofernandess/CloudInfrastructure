@@ -227,6 +227,11 @@ def start_vm(
 
     try:
         resume_vm(instance.one_vm_id)
+        try:
+            from api.compute.autoscaler import queue_vm_for_recovery
+            queue_vm_for_recovery(instance.one_vm_id)
+        except Exception:
+            pass  # Best effort
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenNebula error: {e}")
 

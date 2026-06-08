@@ -375,6 +375,11 @@ def ensure_user_has_running_vm(username: str, vm_id: Optional[int] = None) -> in
         if live["state"] in ("SUSPENDED", "POWEROFF", "STOPPED"):
             print(f"DEBUG: VM '{target_inst.name}' is {live['state']}. Resuming...")
             resume_vm(one_vm_id)
+            try:
+                from api.compute.autoscaler import queue_vm_for_recovery
+                queue_vm_for_recovery(one_vm_id)
+            except Exception:
+                pass  # Best effort
 
         # Wait for the VM to be ACTIVE and LCM_STATE = 3 (RUNNING)
         max_attempts = 45  # wait up to 90 seconds (45 * 2s)

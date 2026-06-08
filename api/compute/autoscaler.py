@@ -8,8 +8,10 @@ Runs every CHECK_INTERVAL_SEC seconds and applies the SLA policy:
 Started and stopped via FastAPI's lifespan in main.py.
 """
 
+import sqlite3
 import threading
 import logging
+import time
 from datetime import datetime, timezone
 
 from opennebula.vm_manager import create_vm, destroy_vm, list_all_vms
@@ -24,6 +26,22 @@ log.setLevel(logging.INFO)
 
 # Tracks how long each VM (by one_vm_id) has been below the idle threshold
 _idle_since: dict[int, datetime] = {}
+
+# Tracks VMs that were just resumed so we can recover their Docker services
+# once they finish booting.  one_vm_id → resume_timestamp
+_recently_resumed: dict[int, datetime] = {}
+
+
+def queue_vm_for_recovery(one_vm_id: int) -> None:
+    """Queue a VM to recover its Docker containers and ports once fully booted."""
+    _recently_resumed[one_vm_id] = datetime.now(timezone.utc)
+    log.info("[RECOVERY] VM %d queued for post-resume service recovery.", one_vm_id)
+
+
+def _get_db_path() -> str:
+    """Return the filesystem path to the SQLite database file."""
+    from api.database import engine
+    return engine.url.database
 
 
 class AutoScaler:
@@ -60,6 +78,9 @@ class AutoScaler:
 
         now = datetime.now(timezone.utc)
         all_vms = list_all_vms()
+
+        # 0. Check if any recently-resumed VMs are now fully booted and need service recovery
+        self._process_pending_recoveries(all_vms, now)
 
         # 1. Record VM metrics for graphing
         self._record_metrics(all_vms)
@@ -164,6 +185,8 @@ class AutoScaler:
                                 resume_vm(vm["one_vm_id"])
                                 inst.suspended_by_system = False
                                 db.commit()
+                                # Track this VM for post-boot service recovery
+                                queue_vm_for_recovery(vm["one_vm_id"])
         except Exception as e:
             log.error("Failed to manage user VMs state: %s", e)
         finally:
@@ -364,6 +387,359 @@ class AutoScaler:
                     return
             else:
                 _idle_since.pop(vid, None)
+
+
+    # ─────────────────────────────────────────────────────────────
+    # Post-resume auto-recovery
+    # ─────────────────────────────────────────────────────────────
+
+    def _process_pending_recoveries(self, all_vms: list, now: datetime) -> None:
+        """
+        Called every autoscaler cycle.  For each VM that was recently resumed,
+        check whether it has finished booting (ACTIVE + LCM=3).  If so, kick
+        off the service-recovery routine and remove it from the pending set.
+        VMs that take longer than 5 minutes to boot are dropped silently.
+        """
+        done = []
+        for one_vm_id, resume_time in list(_recently_resumed.items()):
+            # Give up after 5 minutes
+            if (now - resume_time).total_seconds() > 300:
+                log.warning("[RECOVERY] VM %d recovery timed out (>5 min) — dropping.", one_vm_id)
+                done.append(one_vm_id)
+                continue
+
+            vm_info = next((v for v in all_vms if v["one_vm_id"] == one_vm_id), None)
+            if vm_info and vm_info["state"] == "ACTIVE" and vm_info.get("lcm_state") == 3:
+                ip = vm_info.get("ip_address", "")
+                if ip and ip != "—":
+                    log.info("[RECOVERY] VM %d (%s) is RUNNING — starting service recovery.", one_vm_id, ip)
+                    try:
+                        self._recover_db_services_on_vm(ip, one_vm_id)
+                    except Exception as exc:
+                        log.error("[RECOVERY] VM %d recovery error: %s", one_vm_id, exc)
+                    done.append(one_vm_id)
+
+        for vid in done:
+            _recently_resumed.pop(vid, None)
+
+    def _recover_db_services_on_vm(self, vm_ip: str, one_vm_id: int) -> None:
+        """
+        Full post-resume recovery for a single VM:
+
+        1. Detect stopped Docker containers (exit 255 = host rebooted).
+        2. Start them and wait for their ports to bind.
+        3. Read new dynamic port assignments from Docker.
+        4. Update SQLite db_instances with the new ports.
+        5. For each affected DB cluster:
+           a. Rebuild and reload the HAProxy config.
+           b. Fix replica WAL primary_conninfo so streaming reconnects.
+        """
+        from api.loadbalancer.ssh_utils import run_ssh_command, write_ssh_file
+
+        log.info("[RECOVERY] VM %s — starting post-resume service recovery.", vm_ip)
+
+        # ── Step 1: find stopped containers ──────────────────────────────
+        try:
+            out = run_ssh_command(
+                vm_ip,
+                'docker ps -a --filter "status=exited" --format "{{.Names}}"'
+            )
+            stopped = [n.strip() for n in out.strip().splitlines() if n.strip()]
+        except Exception as exc:
+            log.warning("[RECOVERY] VM %s — cannot query containers: %s", vm_ip, exc)
+            return
+
+        if not stopped:
+            log.info("[RECOVERY] VM %s — no stopped containers found.", vm_ip)
+            return
+
+        log.info("[RECOVERY] VM %s — restarting: %s", vm_ip, stopped)
+
+        # ── Step 2: start them ───────────────────────────────────────────
+        try:
+            run_ssh_command(vm_ip, "docker start " + " ".join(stopped))
+        except Exception as exc:
+            log.error("[RECOVERY] VM %s — docker start failed: %s", vm_ip, exc)
+            return
+
+        time.sleep(5)  # wait for ports to bind
+
+        # ── Step 3: read new port bindings ───────────────────────────────
+        # port_info: { container_name -> { "5432": host_port, "5433": host_port } }
+        port_info: dict[str, dict[str, int]] = {}
+        for cname in stopped:
+            try:
+                raw = run_ssh_command(vm_ip, f"docker port {cname} 2>/dev/null")
+                mapping: dict[str, int] = {}
+                for line in raw.strip().splitlines():
+                    # e.g.  "5432/tcp -> 0.0.0.0:32768"
+                    if "->" in line:
+                        left, right = line.split("->")
+                        cport = left.strip().split("/")[0]  # "5432"
+                        hport = int(right.strip().split(":")[-1])
+                        mapping[cport] = hport
+                if mapping:
+                    port_info[cname] = mapping
+            except Exception as exc:
+                log.warning("[RECOVERY] VM %s — could not get port for %s: %s", vm_ip, cname, exc)
+
+        log.info("[RECOVERY] VM %s — detected port mappings: %s", vm_ip, port_info)
+
+        # ── Step 4: update SQLite ─────────────────────────────────────────
+        db_path = _get_db_path()
+        affected_clusters: set[str] = set()
+        primary_port_changed: dict[str, int] = {}  # cluster_name -> new primary port
+
+        try:
+            con = sqlite3.connect(db_path)
+            cur = con.cursor()
+            rows = cur.execute(
+                "SELECT id, instance_name, role, cluster_name FROM db_instances"
+            ).fetchall()
+
+            for cname, ports in port_info.items():
+                for row_id, inst_name, role, cluster_name in rows:
+                    # Container naming: "db-{username}-{inst_name}"
+                    if not cname.endswith(f"-{inst_name}"):
+                        continue
+
+                    if role == "load_balancer":
+                        write_p = ports.get("5432")
+                        read_p  = ports.get("5433")
+                        if write_p:
+                            cur.execute("UPDATE db_instances SET host_port=? WHERE id=?",
+                                        (write_p, row_id))
+                            log.info("[RECOVERY] %s (lb) write port -> %d", inst_name, write_p)
+                        if read_p:
+                            cur.execute("UPDATE db_instances SET read_host_port=? WHERE id=?",
+                                        (read_p, row_id))
+                            log.info("[RECOVERY] %s (lb) read port -> %d", inst_name, read_p)
+                    else:
+                        pg_p = ports.get("5432")
+                        if pg_p:
+                            cur.execute("UPDATE db_instances SET host_port=? WHERE id=?",
+                                        (pg_p, row_id))
+                            log.info("[RECOVERY] %s (%s) port -> %d", inst_name, role, pg_p)
+                            if role == "primary" and cluster_name:
+                                primary_port_changed[cluster_name] = pg_p
+
+                    if cluster_name:
+                        affected_clusters.add(cluster_name)
+                    break
+
+            con.commit()
+            con.close()
+        except Exception as exc:
+            log.error("[RECOVERY] VM %s — SQLite update failed: %s", vm_ip, exc)
+            return
+
+        # ── Step 5a: rebuild HAProxy config for each affected cluster ─────
+        for cluster in affected_clusters:
+            try:
+                self._rebuild_haproxy_for_cluster(cluster, db_path, vm_ip)
+            except Exception as exc:
+                log.error("[RECOVERY] HAProxy rebuild failed for cluster '%s': %s", cluster, exc)
+
+        # ── Step 5b: fix WAL replica primary_conninfo ──────────────────
+        for cluster, new_primary_port in primary_port_changed.items():
+            try:
+                self._fix_replica_wal_conninfo(cluster, new_primary_port, vm_ip, db_path)
+            except Exception as exc:
+                log.error("[RECOVERY] WAL conninfo fix failed for cluster '%s': %s", cluster, exc)
+
+        log.info("[RECOVERY] VM %s — recovery complete. Clusters affected: %s",
+                 vm_ip, affected_clusters or "none")
+
+    def _rebuild_haproxy_for_cluster(
+        self, cluster_name: str, db_path: str, lb_vm_ip: str
+    ) -> None:
+        """
+        Re-read all current ports from SQLite for `cluster_name`, write a
+        fresh haproxy.cfg to the LB VM, and send SIGHUP to reload it.
+        """
+        from api.loadbalancer.ssh_utils import run_ssh_command, write_ssh_file
+
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        rows = cur.execute(
+            "SELECT instance_name, role, host_port, read_host_port "
+            "FROM db_instances WHERE cluster_name=?",
+            (cluster_name,)
+        ).fetchall()
+        con.close()
+
+        primary_row = next((r for r in rows if r[1] == "primary"), None)
+        replica_rows = [r for r in rows if r[1] == "replica"]
+
+        if not primary_row:
+            log.warning("[RECOVERY] Cluster '%s': no primary found — skipping HAProxy rebuild.",
+                        cluster_name)
+            return
+
+        # Build replica backend lines using their VM IPs
+        replica_cfg = ""
+        for r in replica_rows:
+            # Find which VM hosts this replica container
+            r_ip = self._find_container_vm_ip(f"-{r[0]}")  # ends with inst_name
+            if not r_ip:
+                r_ip = lb_vm_ip  # fallback: same VM
+            replica_cfg += f"    server db-{r[0]} {r_ip}:{r[2]} check\n"
+
+        haproxy_cfg = (
+            "global\n"
+            "    log stdout format raw local0\n"
+            "    nbthread 1\n"
+            "    maxconn 100\n"
+            "\n"
+            "defaults\n"
+            "    log     global\n"
+            "    mode    tcp\n"
+            "    maxconn 50\n"
+            "    timeout connect 5s\n"
+            "    timeout client  50s\n"
+            "    timeout server  50s\n"
+            "\n"
+            "frontend postgres_write_front\n"
+            "    bind *:5432\n"
+            "    default_backend postgres_primary\n"
+            "\n"
+            "backend postgres_primary\n"
+            "    mode tcp\n"
+            "    option tcp-check\n"
+            f"    server db-primary {lb_vm_ip}:{primary_row[2]} check\n"
+            "\n"
+            "frontend postgres_read_front\n"
+            "    bind *:5433\n"
+            "    default_backend postgres_replicas\n"
+            "\n"
+            "backend postgres_replicas\n"
+            "    mode tcp\n"
+            "    balance roundrobin\n"
+            "    option tcp-check\n"
+            f"    server db-primary {lb_vm_ip}:{primary_row[2]} check\n"
+            f"{replica_cfg}"
+        )
+
+        cfg_path = f"/var/lib/haproxy-{cluster_name}/haproxy.cfg"
+        write_ssh_file(lb_vm_ip, cfg_path, haproxy_cfg)
+        log.info("[RECOVERY] Wrote new HAProxy config for cluster '%s'.", cluster_name)
+
+        # Find the HAProxy container name and SIGHUP it
+        try:
+            out = run_ssh_command(
+                lb_vm_ip,
+                f'docker ps --filter "name={cluster_name}-lb" --format "{{{{.Names}}}}"'
+            )
+            lb_cname = next(
+                (n.strip() for n in out.strip().splitlines() if cluster_name in n and "lb" in n),
+                None
+            )
+            if lb_cname:
+                run_ssh_command(lb_vm_ip, f"docker kill -s HUP {lb_cname}")
+                log.info("[RECOVERY] HAProxy reloaded (SIGHUP) for cluster '%s'.", cluster_name)
+            else:
+                log.warning("[RECOVERY] HAProxy container not found for cluster '%s'.", cluster_name)
+        except Exception as exc:
+            log.warning("[RECOVERY] HAProxy SIGHUP failed for cluster '%s': %s", cluster_name, exc)
+
+    def _fix_replica_wal_conninfo(
+        self, cluster_name: str, new_primary_port: int, primary_vm_ip: str, db_path: str
+    ) -> None:
+        """
+        For every replica in `cluster_name`, run:
+          ALTER SYSTEM SET primary_conninfo = '...';
+          SELECT pg_reload_conf();
+        so WAL streaming reconnects to the primary's new port.
+        """
+        from api.loadbalancer.ssh_utils import run_ssh_command
+
+        new_conninfo = (
+            f"user=replicator password=replicasecret "
+            f"host={primary_vm_ip} port={new_primary_port} sslmode=prefer"
+        )
+
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        replicas = cur.execute(
+            "SELECT instance_name, db_user, db_password, db_name "
+            "FROM db_instances WHERE cluster_name=? AND role='replica'",
+            (cluster_name,)
+        ).fetchall()
+        con.close()
+
+        for inst_name, db_user, db_password, db_name in replicas:
+            replica_vm_ip = self._find_container_vm_ip(f"-{inst_name}")
+            if not replica_vm_ip:
+                log.warning("[RECOVERY] Cannot find VM for replica '%s' — skipping WAL fix.",
+                            inst_name)
+                continue
+            try:
+                container_name_fragment = inst_name  # e.g. "test-db-lb-replica-1"
+                # Get the full container name from docker ps
+                out = run_ssh_command(
+                    replica_vm_ip,
+                    f'docker ps --filter "name={container_name_fragment}" --format "{{{{.Names}}}}"'
+                )
+                cname = next(
+                    (n.strip() for n in out.strip().splitlines() if container_name_fragment in n),
+                    None
+                )
+                if not cname:
+                    log.warning("[RECOVERY] Replica container '%s' not running — skipping.",
+                                inst_name)
+                    continue
+
+                psql_prefix = (
+                    f"docker exec -e PGPASSWORD='{db_password}' {cname} "
+                    f"psql -U {db_user} -d {db_name}"
+                )
+                run_ssh_command(
+                    replica_vm_ip,
+                    f"{psql_prefix} -c \"ALTER SYSTEM SET primary_conninfo = '{new_conninfo}';\""
+                )
+                run_ssh_command(
+                    replica_vm_ip,
+                    f"{psql_prefix} -c \"SELECT pg_reload_conf();\""
+                )
+                log.info(
+                    "[RECOVERY] Replica '%s' WAL conninfo updated → port %d.",
+                    inst_name, new_primary_port
+                )
+            except Exception as exc:
+                log.error("[RECOVERY] WAL conninfo update failed for replica '%s': %s",
+                          inst_name, exc)
+
+    def _find_container_vm_ip(self, container_name_suffix: str) -> str | None:
+        """
+        Scan all ACTIVE OpenNebula VMs and return the IP of the first one
+        that has a Docker container whose name ends with `container_name_suffix`.
+        Returns None if no match is found.
+        """
+        from api.loadbalancer.ssh_utils import run_ssh_command
+
+        try:
+            all_vms = list_all_vms()
+        except Exception:
+            return None
+
+        for vm in all_vms:
+            if vm["state"] != "ACTIVE" or vm.get("lcm_state") != 3:
+                continue
+            ip = vm.get("ip_address", "")
+            if not ip or ip == "—":
+                continue
+            try:
+                out = run_ssh_command(
+                    ip,
+                    f'docker ps --filter "name={container_name_suffix}" '
+                    f'--format "{{{{.Names}}}}" 2>/dev/null'
+                )
+                for name in out.strip().splitlines():
+                    if container_name_suffix.lstrip("-") in name:
+                        return ip
+            except Exception:
+                continue
+        return None
 
 
 # Singleton used by main.py
