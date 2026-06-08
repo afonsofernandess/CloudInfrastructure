@@ -96,15 +96,6 @@ This forwards:
 │   └── test_scale_to_zero.py      # VM inactivity/power-saving test script
 ├── minio_data/                    # MinIO data directory (auto-created, git-ignored)
 ├── cloud.db                       # SQLite database (auto-created on first run)
-├── GUIDELINES.md                  # Implementation plan and phases
-├── README_AUTH.md                 # User authentication & OpenNebula sync guide
-├── README_CONCURRENCY.md          # ThreadPoolExecutor concurrency model guide
-├── README_CONTAINERS.md           # Container Service & Docker SDK guide
-├── README_DATABASE.md             # DBaaS architecture and testing guide
-├── README_DISK&STORAGE.md         # Block Storage & Object Storage guide
-├── README_OPENNEBULA.md           # Behind the scenes OpenNebula interaction guide
-├── README_VM.md                   # Elastic Compute & Autoscaler architecture guide
-├── REPORT.md                      # Academic project report (this file)
 └── README.md                      # This file
 ```
 
@@ -228,22 +219,6 @@ Verification script testing the full VM attachment and detachment lifecycle of v
 
 **`dashboard/`**
 Contains the Vite + React frontend web application for managing all services.
-
-**`README_DATABASE.md`**
-Guide describing DBaaS architecture, connectivity, and database management.
-
-**`README_DISK&STORAGE.md`**
-Guide describing Block Storage disk operations, VM attachment, formatting, Linux directory mounting, and MinIO S3 Object Storage architecture.
-
-**`README_OPENNEBULA.md`**
-Guide describing the low-level pyone XML-RPC connection, VM states, Libvirt hot-plugs, and Context CD-ROM bootstrap.
-
-**`REPORT.md`**
-Academic project report detailing background research, materials and methods, installation, test cases, and design discussion.
-
-
-
-
 ---
 
 ## 3. Installation
@@ -301,9 +276,6 @@ uvicorn api.main:app --reload --port 8000
 
 ## 5. Phase 1 — OpenNebula Connection
 
-> [!NOTE]
-> For a detailed walkthrough of the low-level XML-RPC communication model, QEMU VM state transitions, datablock allocation, hot-plug devices, and the boot contextualization ISO process, please refer to the dedicated **[README_OPENNEBULA.md](file:///Users/angiebras/Library/CloudStorage/OneDrive-Pessoal/Ambiente de Trabalho/Mestrado/2-SEMESTRE/CLOUD/CloudInfra/CloudInfrastructure/README_OPENNEBULA.md)**.
-
 Tests that the tunnel is up and the credentials are valid. Lists VMs, templates, datastores, and hosts.
 
 ```bash
@@ -325,9 +297,6 @@ If you see `[FAIL] Could not connect` → the SSH tunnel is not running.
 ---
 
 ## 6. Phase 2 — User Management
-
-> [!NOTE]
-> For a detailed guide on the database models, API flows, session logic, and deep integration with OpenNebula, please refer to the dedicated **[README_AUTH.md](file:///Users/angiebras/Library/CloudStorage/OneDrive-Pessoal/Ambiente de Trabalho/Mestrado/2-SEMESTRE/CLOUD/CloudInfra/CloudInfrastructure/README_AUTH.md)**.
 
 The API server must be running (`uvicorn api.main:app --reload --port 8000`).
 
@@ -429,9 +398,6 @@ curl -s http://localhost:8000/auth/me \
 ---
 
 ## 7. Phase 3 — Elastic Compute
-
-> [!NOTE]
-> For a detailed guide on the virtual machine provisioning, pre-warming, inactivity suspension/scale-to-zero, WebSocket SSH terminal, and autoscaling SLA logic, please refer to the dedicated **[README_VM.md](file:///Users/angiebras/Library/CloudStorage/OneDrive-Pessoal/Ambiente de Trabalho/Mestrado/2-SEMESTRE/CLOUD/CloudInfra/CloudInfrastructure/README_VM.md)**.
 
 The API server must be running and the SSH tunnel must be active.
 
@@ -547,9 +513,6 @@ INFO:autoscaler:Scaled DOWN — destroyed VM one_vm_id=4 (idle >120s)
 
 ## 8. Phase 4 — Disk Storage
 
-> [!NOTE]
-> For a detailed guide on Block Storage allocation, VM disk attachment/detachment, device formatting, Linux directory mounting, and MinIO S3 Object Storage file operations, please refer to the dedicated **[README_DISK&STORAGE.md](file:///Users/angiebras/Library/CloudStorage/OneDrive-Pessoal/Ambiente de Trabalho/Mestrado/2-SEMESTRE/CLOUD/CloudInfra/CloudInfrastructure/README_DISK&STORAGE.md)**.
-
 MinIO must be running and the API server must be running.
 
 ### Start MinIO (required before the API)
@@ -661,9 +624,6 @@ for bucket in client.list_buckets():
 ---
 
 ## 9. Phase 5 — Container Service
-
-> [!NOTE]
-> For a detailed guide on remote Docker communication over SSH, security labeling/isolation, load balancing scheduling, parallel querying, self-healing installation, and live metrics calculation, please refer to the dedicated **[README_CONTAINERS.md](file:///Users/angiebras/Library/CloudStorage/OneDrive-Pessoal/Ambiente de Trabalho/Mestrado/2-SEMESTRE/CLOUD/CloudInfra/CloudInfrastructure/README_CONTAINERS.md)**.
 
 Docker must be installed and running on the machine. The API server must be running.
 

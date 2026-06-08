@@ -17,3 +17,11 @@ dashboard/dist/
 
 
 .antigravitycli/
+
+# Ignore all markdown files
+*.md
+**/*.md
+**/*.MD
+
+# Except the main README
+!README.md
